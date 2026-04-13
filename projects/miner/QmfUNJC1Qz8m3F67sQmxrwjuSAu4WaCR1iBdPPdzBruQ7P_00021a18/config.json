@@ -1,0 +1,2425 @@
+{
+  "cid": "QmfUNJC1Qz8m3F67sQmxrwjuSAu4WaCR1iBdPPdzBruQ7P",
+  "endpoint": "https://index-api.onfinality.io/sq/subquery/subquery-mainnet",
+  "schema_content": "enum ProjectType {\n  SUBQUERY\n  RPC\n  SQ_DICT\n  SUBGRAPH\n  LLM\n}\n\nenum OrderType {\n  SERVICE_AGREEMENT\n  STATE_CHANNEL\n  UNKNOWN\n}\n\nenum ServiceStatus {\n  READY\n  TERMINATED\n}\n\nenum WithdrawalStatus {\n  ONGOING\n  CLAIMED\n  CANCELLED\n}\n\nenum WithdrawalType {\n  UNDELEGATION\n  UNSTAKE\n  COMMISSION\n  MERGE\n}\n\nenum ChannelStatus {\n  FINALIZED\n  OPEN\n  TERMINATING\n}\n\nenum DisputeType {\n  POI\n  QUERY\n}\n\nenum DisputeState {\n  ONGOING\n  ACCEPTED\n  REJECTED\n  CANCELLED\n}\n\n\"\"\"\nProject entity represents SubQuery projects in the network.\nSupports 5-round reward distribution: by project type -> consumer boost allocation -> operator+delegator -> commission -> stake-proportional distribution.\nEach project can have multiple deployment versions and dynamic type weighting configuration.\n\"\"\"\ntype Project @entity {\n  \"\"\"\n  Project unique identifier\n  \"\"\"\n  id: ID!\n\n  \"\"\"\n  Project owner wallet address\n  \"\"\"\n  owner: String!\n  \"\"\"\n  Project type classification\n  \"\"\"\n  type: ProjectType!\n  \"\"\"\n  Project metadata IPFS hash\n  \"\"\"\n  metadata: String!\n  \"\"\"\n  IPFS hash pointing to deployment code version\n  \"\"\"\n  deploymentId: String!\n  \"\"\"\n  IPFS hash pointing to deployment metadata\n  \"\"\"\n  deploymentMetadata: String!\n  \"\"\"\n  When project was last updated\n  \"\"\"\n  updatedTimestamp: Date!\n  \"\"\"\n  When project was created\n  \"\"\"\n  createdTimestamp: Date!\n  \"\"\"\n  Total rewards earned by this project\n  \"\"\"\n  totalReward: BigInt!\n  \"\"\"\n  Consumer boost funds for this project's deployments\n  \"\"\"\n  totalBoost: BigInt!\n  \"\"\"\n  Combined operator(indexer) + delegator allocation funds\n  \"\"\"\n  totalAllocation: BigInt!\n  \"\"\"\n  Ratio of boost to total allocation with 18 decimal precision: (totalBoost * 10^18) / totalAllocation\n  \"\"\"\n  boostAllocationRatio: BigInt!\n\n  deployments: [Deployment] @derivedFrom(field: \"project\")\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nDeployment entity represents versions of a project's code deployment.\nA single project can have multiple deployments (versions), with Plans for creating agreements and IndexerDeployment records for operators running it.\n\"\"\"\ntype Deployment @entity {\n  \"\"\"\n  Deployment identifier (IPFS hash to deployment)\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Deployment metadata IPFS hash\n  \"\"\"\n  metadata: String!\n  \"\"\"\n  The parent project that this deployment belongs to - one project can have multiple deployment versions\n  \"\"\"\n  project: Project!\n  \"\"\"\n  List of operators(indexers) that are running this specific deployment\n  \"\"\"\n  indexers: [IndexerDeployment]! @derivedFrom(field: \"deployment\")\n  \"\"\"\n  When deployment was created\n  \"\"\"\n  createdTimestamp: Date!\n\n  \"\"\"\n  Service plans available for creating agreements on this deployment\n  \"\"\"\n  plans: [Plan]! @derivedFrom(field: \"deployment\")\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nIndexerDeployment tracks which operators (indexers) are running specific deployments.\nOne operator can serve multiple deployments, and one deployment can be served by multiple operators.\nStatus changes are controlled by operator calling chain methods.\n\"\"\"\ntype IndexerDeployment @entity {\n  \"\"\"\n  Composite ID: indexer address + deployment id\n  \"\"\"\n  id: ID!\n  indexer: Indexer!\n  deployment: Deployment!\n\n  \"\"\"\n  Timestamp of the last status change - when operator called chain methods to update service status\n  \"\"\"\n  timestamp: Date\n  \"\"\"\n  Current service status (READY/TERMINATED) - controlled by operator via on-chain method calls\n  \"\"\"\n  status: ServiceStatus!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nEra represents time periods for reward distribution cycles in the network.\nEra duration is operator-triggered with minimum seconds configuration, may have delays.\nMost reward distributions are triggered after era transitions. \neraPeriod stores duration in milliseconds format (seconds * 1000).\n\"\"\"\ntype Era @entity {\n  \"\"\"\n  Era identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Block timestamp when this Era started - triggered by operator calling era advancement.\n  Most reward distributions are triggered after era transitions.\n  \"\"\"\n  startTime: Date!\n  \"\"\"\n  Block timestamp when this Era ended (when next Era started) - may be delayed beyond configured period\n  \"\"\"\n  endTime: Date\n  \"\"\"\n  True when this Era was force-created to fill missing previous Era data\n  \"\"\"\n  forceNext: Boolean\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n  \"\"\"\n  Era period duration in milliseconds - derived from on-chain eraPeriod configuration (seconds * 1000)\n  \"\"\"\n  eraPeriod: String\n}\n\n\"\"\"\nAI/LLM Warning: Do not use this JSONBigInt field for filtering or queries.\nUse the flattened BigInt field instead (e.g., maxUnstakeAmountValue)\nThis is a legacy workaround from old SDK bugs - flattened fields are preferred for easier AI analysis.\n\"\"\"\ntype JSONBigInt @jsonField {\n  \"\"\"\n  Always \"bigint\" - type identifier for the JSON field\n  \"\"\"\n  type: String!\n  \"\"\"\n  Hex encoded string representation of the BigInt value\n  \"\"\"\n  value: String!\n}\n\n\"\"\"\nAI/LLM Warning: Do not use this EraValue field for filtering or queries.\nUse the flattened fields instead (e.g., commissionEra, commissionEraValueAt, commissionEraValueAfter)\nThis is a legacy workaround for tracking value changes across eras - flattened fields are preferred for easier AI analysis.\n\"\"\"\ntype EraValue @jsonField {\n  \"\"\"\n  Era number when this value change occurred\n  \"\"\"\n  era: Int!\n  \"\"\"\n  Value before the change in the specified era\n  \"\"\"\n  value: JSONBigInt!\n  \"\"\"\n  Value after the change in the specified era\n  \"\"\"\n  valueAfter: JSONBigInt!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nIndexer entity represents network operators who run deployments and earn rewards.\nContains both EraValue and flattened fields - use flattened fields for easier querying.\nCapacity = selfStake * leverageLimit - totalStake (remaining delegation capacity).\nCurrent value rule: use xxxEraValueAfter if currentEra > xxxEra, otherwise use xxxEraValue.\n\"\"\"\ntype Indexer @entity {\n  \"\"\"\n  Indexer wallet address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer metadata IPFS CID\n  \"\"\"\n  metadata: String!\n  \"\"\"\n  Controller address for the indexer (proxy for chain operations)\n  \"\"\"\n  controller: String\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use commissionEra, commissionEraValue, commissionEraValueAfter instead\n  \"\"\"\n  commission: EraValue!\n  \"\"\"\n  Era when commission rate was last changed.\n  For current commission rate: use commissionEraValueAfter if currentEra > commissionEra, otherwise use commissionEraValue\n  \"\"\"\n  commissionEra: Int!\n  \"\"\"\n  Commission rate value before the change in commissionEra\n  \"\"\"\n  commissionEraValue: BigInt!\n  \"\"\"\n  Commission rate value after the change in commissionEra\n  \"\"\"\n  commissionEraValueAfter: BigInt!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use totalStakeEra, totalStakeEraValue, totalStakeEraValueAfter instead\n  \"\"\"\n  totalStake: EraValue!\n  \"\"\"\n  Era when total stake was last changed.\n  For current total stake: use totalStakeEraValueAfter if currentEra > totalStakeEra, otherwise use totalStakeEraValue\n  \"\"\"\n  totalStakeEra: Int!\n  \"\"\"\n  Total stake value before the change in totalStakeEra (selfStake + all delegations)\n  \"\"\"\n  totalStakeEraValue: BigInt!\n  \"\"\"\n  Total stake value after the change in totalStakeEra (selfStake + all delegations)\n  \"\"\"\n  totalStakeEraValueAfter: BigInt!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use selfStakeEra, selfStakeEraValue, selfStakeEraValueAfter instead\n  \"\"\"\n  selfStake: EraValue!\n  \"\"\"\n  Era when self stake was last changed.\n  For current self stake: use selfStakeEraValueAfter if currentEra > selfStakeEra, otherwise use selfStakeEraValue\n  \"\"\"\n  selfStakeEra: Int!\n  \"\"\"\n  Self stake value before the change in selfStakeEra\n  \"\"\"\n  selfStakeEraValue: BigInt!\n  \"\"\"\n  Self stake value after the change in selfStakeEra\n  \"\"\"\n  selfStakeEraValueAfter: BigInt!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use capacityEra, capacityEraValue, capacityEraValueAfter instead\n  \"\"\"\n  capacity: EraValue!\n  \"\"\"\n  Era when capacity was last changed.\n  For current capacity: use capacityEraValueAfter if currentEra > capacityEra, otherwise use capacityEraValue\n  \"\"\"\n  capacityEra: Int!\n  \"\"\"\n  Capacity value before the change in capacityEra.\n  Capacity = selfStake * leverageLimit - totalStake (remaining delegation capacity)\n  \"\"\"\n  capacityEraValue: BigInt!\n  \"\"\"\n  Capacity value after the change in capacityEra.\n  Capacity = selfStake * leverageLimit - totalStake (remaining delegation capacity)\n  \"\"\"\n  capacityEraValueAfter: BigInt!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use maxUnstakeAmountValue instead\n  \"\"\"\n  maxUnstakeAmount: JSONBigInt!\n  \"\"\"\n  Maximum unstake amount as BigInt value\n  \"\"\"\n  maxUnstakeAmountValue: BigInt!\n\n  controllers: [Controller] @derivedFrom(field: \"indexer\")\n  projects: [IndexerDeployment] @derivedFrom(field: \"indexer\")\n  delegations: [Delegation] @derivedFrom(field: \"indexer\")\n  rewards: [IndexerReward] @derivedFrom(field: \"indexer\")\n\n  \"\"\"\n  Era when this indexer last claimed rewards\n  \"\"\"\n  lastClaimEra: String\n  \"\"\"\n  Era when this indexer's rewards were last settled/calculated\n  \"\"\"\n  lastSettledEra: String\n  \"\"\"\n  Whether the indexer is currently active\n  \"\"\"\n  active: Boolean! @index\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nHistorical commission rate records for indexers across different eras.\nWhen commission rate changes, creates records for current era + next 2 eras.\nNew rate takes effect from era+2, providing 2-era buffer period for delegators.\n\"\"\"\ntype IndexerCommissionRate @entity {\n  \"\"\"\n  Composite ID: indexer address + era id (hex format)\n  \"\"\"\n  id: ID!\n  indexer: Indexer!\n  era: Era!\n  \"\"\"\n  Era number for easier calculation and comparison\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Commission rate converted from indexer.commission BigInt to Number\n  \"\"\"\n  commissionRate: Int!\n}\n\n\"\"\"\nController entity represents proxy addresses that execute on-chain operations for indexers.\nEach indexer can have only one active controller at a time, but can switch controllers.\nHistorical controller records are preserved with isActive flag indicating current status.\n\"\"\"\ntype Controller @entity {\n  \"\"\"\n  Composite ID: indexer address + controller address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Controller proxy address that executes chain operations\n  \"\"\"\n  controller: String!\n  indexer: Indexer!\n  \"\"\"\n  Whether this controller is currently active for the indexer (only one can be active at a time)\n  \"\"\"\n  isActive: Boolean!\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nDelegator entity represents users who delegate tokens to indexers to earn rewards.\nTracks total delegations across all indexers with era-based value changes.\nexitEra is set only when completely exiting (totalDelegations <= 0), otherwise remains -1.\n\"\"\"\ntype Delegator @entity {\n  \"\"\"\n  Delegator wallet address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use totalDelegationsEra, totalDelegationsEraValue, totalDelegationsEraValueAfter instead\n  \"\"\"\n  totalDelegations: EraValue!\n  totalDelegationsEra: Int!\n  totalDelegationsEraValue: BigInt!\n  totalDelegationsEraValueAfter: BigInt!\n  delegations: [Delegation] @derivedFrom(field: \"delegator\")\n  claimedRewards: [Reward] @derivedFrom(field: \"delegator\")\n  unclaimedRewards: [UnclaimedReward] @derivedFrom(field: \"delegator\")\n  \"\"\"\n  Era when first started delegating (or re-entered after complete exit)\n  \"\"\"\n  startEra: Int!\n  \"\"\"\n  Era when completely exited all delegations. -1 means still actively delegating\n  \"\"\"\n  exitEra: Int!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nDelegation entity represents a specific delegation relationship between a delegator and an indexer.\nEach delegator can have multiple delegations to different indexers.\nexitEra is set only when completely exiting this specific delegation, partial withdrawals just update amount.\n\"\"\"\ntype Delegation @entity {\n  \"\"\"\n  Composite ID: delegator address + indexer address\n  \"\"\"\n  id: ID!\n  delegator: Delegator!\n  indexer: Indexer!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use amountEra, amountEraValue, amountEraValueAfter instead\n  \"\"\"\n  amount: EraValue!\n  amountEra: Int!\n  amountEraValue: BigInt!\n  amountEraValueAfter: BigInt!\n  \"\"\"\n  Era when this specific delegation to the indexer was completely exited. undefined/null means still active\n  \"\"\"\n  exitEra: Int\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nAI/LLM Warning: Do not use this DelegationFrom field for filtering or queries.\nUse the flattened fields instead (e.g., delegatorAddresses, delegatorAmounts)\n\nDelegationFrom represents delegator information in era-based snapshots.\nUsed in EraIndexerDelegator entity to store all delegators for a specific indexer in a specific era.\nLegacy JSON field type - flattened arrays are preferred for easier AI analysis.\n\"\"\"\ntype DelegationFrom @jsonField {\n  \"\"\"\n  Delegator wallet address\n  \"\"\"\n  delegator: String!\n  \"\"\"\n  Delegation amount from this delegator\n  \"\"\"\n  amount: BigInt!\n}\n\n\"\"\"\nAI/LLM Warning: Do not use this DelegationTo field for filtering or queries.\nUse the flattened fields instead (e.g., indexerAddresses, indexerAmounts)\n\nDelegationTo represents indexer information from delegator's perspective in era-based snapshots.\nUsed in EraDelegatorIndexer entity to store all indexers a specific delegator delegates to in a specific era.\nSymmetric counterpart to DelegationFrom - provides delegator->indexer view while DelegationFrom provides indexer->delegator view.\nLegacy JSON field type - flattened arrays are preferred for easier AI analysis.\n\"\"\"\ntype DelegationTo @jsonField {\n  \"\"\"\n  Target indexer address receiving the delegation\n  \"\"\"\n  indexer: String!\n  \"\"\"\n  Delegation amount to this indexer\n  \"\"\"\n  amount: BigInt!\n}\n\n\"\"\"\nEraIndexerDelegator provides era-based snapshots of delegator distribution for each indexer.\nUses dual ID system: 'indexer' for latest live data, 'indexer:era' for historical snapshots.\nReal-time updates to latest record, batch creation of historical records via fillUpEraIndexerDelegator.\ntotalStake = sum of all delegatorAmounts + selfStake.\n\"\"\"\ntype EraIndexerDelegator @entity {\n  \"\"\"\n  Dual ID format: 'indexer_address' (latest data) or 'indexer_address:era_hex' (historical data)\n  \"\"\"\n  id: ID!\n  indexer: String!\n  era: Int!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use delegatorAddresses, delegatorAmounts instead\n  \"\"\"\n  delegators: [DelegationFrom!]!\n  delegatorAddresses: [String!]!\n  delegatorAmounts: [BigInt!]!\n  \"\"\"\n  Total stake amount: sum of all delegation amounts plus self stake\n  \"\"\"\n  totalStake: BigInt!\n  \"\"\"\n  Self stake amount by the indexer\n  \"\"\"\n  selfStake: BigInt!\n}\n\n\"\"\"\nEraDelegatorIndexer provides era-based snapshots of indexer targets from each delegator's perspective.\nSymmetric counterpart to EraIndexerDelegator - shows which indexers a delegator delegates to.\nUses same dual ID system: 'delegator' for latest live data, 'delegator:era' for historical snapshots.\nReal-time updates to latest record, batch creation of historical records via fillUpEraDelegatorIndexer.\n\"\"\"\ntype EraDelegatorIndexer @entity {\n  \"\"\"\n  Dual ID format: 'delegator_address' (latest data) or 'delegator_address:era_hex' (historical data)\n  \"\"\"\n  id: ID!\n  delegator: String!\n  era: Int!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use indexerAddresses, indexerAmounts instead\n  \"\"\"\n  indexers: [DelegationTo!]!\n  indexerAddresses: [String!]!\n  indexerAmounts: [BigInt!]!\n  \"\"\"\n  Total stake amount: sum of all delegation amounts by this delegator\n  \"\"\"\n  totalStake: BigInt!\n  \"\"\"\n  Self stake amount if this delegator is also an indexer, otherwise 0\n  \"\"\"\n  selfStake: BigInt!\n}\n\n\"\"\"\nWithdrawl represents withdrawal/unstaking operations in the network.\nNote: Entity name has intentional spelling (Withdrawl vs Withdrawal) - cannot be changed.\nSupports different withdrawal types: undelegation, unstaking, commission claims, and merge operations.\nStatus progresses from ONGOING to either CLAIMED or CANCELLED.\n\"\"\"\ntype Withdrawl @entity {\n  \"\"\"\n  Composite ID: delegator_address:index_hex\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Sequential index for this delegator's withdrawal operations\n  \"\"\"\n  index: BigInt!\n  \"\"\"\n  Delegator (nominator) address initiating the withdrawal\n  \"\"\"\n  delegator: String! @index\n  \"\"\"\n  Target indexer address for the withdrawal operation\n  \"\"\"\n  indexer: String!\n  \"\"\"\n  Timestamp when withdrawal was initiated\n  \"\"\"\n  startTime: Date!\n  \"\"\"\n  Amount being withdrawn\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Type of withdrawal: UNDELEGATION, UNSTAKE, COMMISSION, or MERGE\n  \"\"\"\n  type: WithdrawalType!\n  \"\"\"\n  Current status: ONGOING, CLAIMED, or CANCELLED\n  \"\"\"\n  status: WithdrawalStatus!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nConsumerController represents proxy addresses that execute on-chain operations for consumers.\nSimilar to indexer controllers, consumers can delegate operational control to controller addresses.\nProvides consumer-side proxy management mechanism for chain interactions.\n\"\"\"\ntype ConsumerController @entity {\n  \"\"\"\n  Composite ID: consumer_address_controller_address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Controller proxy address that executes chain operations for the consumer\n  \"\"\"\n  controller: String! @index\n  \"\"\"\n  Consumer address that delegates control to the controller\n  \"\"\"\n  consumer: String! @index\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nPlanTemplate represents service plan templates that define pricing and service limits.\nTemplates are used to create specific Plan instances with custom pricing.\nSupports billing periods, request quotas, rate limiting, and multi-token payments.\nTemplates can be activated/deactivated and have updatable metadata stored on IPFS.\n\"\"\"\ntype PlanTemplate @entity {\n  \"\"\"\n  Template index in hex format\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Billing period duration (units defined in contract)\n  \"\"\"\n  period: BigInt!\n  \"\"\"\n  Daily request quota limit\n  \"\"\"\n  dailyReqCap: BigInt!\n  \"\"\"\n  Request rate limit (requests per time unit)\n  \"\"\"\n  rateLimit: BigInt!\n  \"\"\"\n  Payment token contract address\n  \"\"\"\n  priceToken: String!\n  \"\"\"\n  IPFS CID containing additional service description and metadata\n  \"\"\"\n  metadata: String\n  \"\"\"\n  Whether this template is currently active and available for use\n  \"\"\"\n  active: Boolean!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nPlan represents specific service plan instances created from PlanTemplate.\nInherits service limits (period, quotas, rate limits) from template but has custom pricing.\nCan be optionally bound to specific deployments to provide targeted services.\nUsed as basis for creating ServiceAgreements between indexers and consumers.\n\"\"\"\ntype Plan @entity {\n  \"\"\"\n  Plan index in hex format\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Custom price for this plan instance\n  \"\"\"\n  price: BigInt!\n  \"\"\"\n  Address of the plan creator (typically indexer)\n  \"\"\"\n  creator: String! @index\n  \"\"\"\n  Template that defines service limits and payment token\n  \"\"\"\n  planTemplate: PlanTemplate!\n  \"\"\"\n  Whether this plan is currently active and available\n  \"\"\"\n  active: Boolean!\n  \"\"\"\n  Optional deployment this plan is specifically bound to\n  \"\"\"\n  deployment: Deployment\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nServiceAgreement represents service contracts between indexers and consumers.\nCreated when a closed service agreement is established on-chain, defining service terms,\nduration, and payment amounts. Each agreement is an NFT-like token that can be transferred.\n\"\"\"\ntype ServiceAgreement @entity {\n  \"\"\"\n  Service agreement token ID from the contract\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer providing the service\n  \"\"\"\n  indexerAddress: String! @index\n  \"\"\"\n  Consumer purchasing the service (can be transferred)\n  \"\"\"\n  consumerAddress: String! @index\n  \"\"\"\n  Deployment being served by this agreement\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Template defining service limits and payment token (not Plan instance)\n  \"\"\"\n  planTemplate: PlanTemplate!\n  \"\"\"\n  Service duration in seconds\n  \"\"\"\n  period: BigInt!\n  \"\"\"\n  Agreement start timestamp\n  \"\"\"\n  startTime: Date!\n  \"\"\"\n  Agreement end timestamp (calculated from startTime + period)\n  \"\"\"\n  endTime: Date! @index\n  \"\"\"\n  Total amount locked/paid for this service agreement\n  \"\"\"\n  lockedAmount: BigInt!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nUnclaimedReward tracks accumulated unclaimed rewards for delegator-indexer pairs.\nRewards accumulate over time through era distributions and are removed when claimed,\ncreating a corresponding Reward record for the claimed amount.\n\"\"\"\ntype UnclaimedReward @entity {\n  \"\"\"\n  Composite ID: indexer_address:delegator_address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer address earning rewards\n  \"\"\"\n  indexerAddress: String!\n  \"\"\"\n  Delegator address with unclaimed rewards\n  \"\"\"\n  delegatorAddress: String! @index\n  \"\"\"\n  Reference to the delegator entity\n  \"\"\"\n  delegator: Delegator\n  \"\"\"\n  Total accumulated unclaimed reward amount (cumulative)\n  \"\"\"\n  amount: BigInt!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nReward represents historical records of claimed rewards.\nCreated when users claim their accumulated rewards from UnclaimedReward entities.\nEach record is immutable and tracks the specific claim transaction details.\n\"\"\"\ntype Reward @entity {\n  \"\"\"\n  Composite ID: indexer:delegator:transaction_hash:log_index\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer address that earned the rewards\n  \"\"\"\n  indexerAddress: String!\n  \"\"\"\n  Delegator address that claimed the rewards\n  \"\"\"\n  delegatorAddress: String! @index\n  \"\"\"\n  Reference to the delegator entity\n  \"\"\"\n  delegator: Delegator\n  \"\"\"\n  Amount of rewards claimed in this transaction\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Timestamp when the rewards were claimed\n  \"\"\"\n  claimedTime: Date!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nIndexerReward tracks the total accumulated rewards for each indexer per era.\nRecords are created or updated when various reward events occur (instant rewards, agreement rewards, etc.).\nAmount field accumulates all rewards an indexer receives during a specific era.\n\"\"\"\ntype IndexerReward @entity {\n  \"\"\"\n  Composite ID: indexer_address:era_hex\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Reference to the indexer earning rewards\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Era index in string format (deprecated, use eraId instead)\n  \"\"\"\n  eraIdx: String!\n  \"\"\"\n  Era index in BigInt format\n  \"\"\"\n  eraId: BigInt!\n  \"\"\"\n  Total accumulated reward amount for this indexer in this era\n  \"\"\"\n  amount: BigInt!\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nEraReward tracks detailed reward records for each indexer-delegator pair per era.\nRecords both regular delegation rewards and commission rewards for indexers.\nProvides granular reward tracking that feeds into APY calculations and claim management.\n\"\"\"\ntype EraReward @entity {\n  \"\"\"\n  Composite ID: indexer:delegator:era[_commission]\n  Appends '_commission' suffix for commission reward records\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer earning or distributing the rewards\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Delegator receiving the rewards (same as indexer for commission)\n  \"\"\"\n  delegator: Delegator!\n  \"\"\"\n  Era when this reward was distributed\n  \"\"\"\n  era: Era!\n  \"\"\"\n  Era index as integer\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  True if this is a self-stake reward (indexerId === delegatorId)\n  \"\"\"\n  isIndexer: Boolean!\n  \"\"\"\n  True if this represents commission earnings for indexer\n  \"\"\"\n  isCommission: Boolean!\n  \"\"\"\n  Reward amount for this specific indexer-delegator-era combination\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Whether this reward has been claimed (commission rewards are auto-claimed)\n  \"\"\"\n  claimed: Boolean!\n\n  createdBlock: Int\n  createdTimestamp: Date!\n}\n\n\"\"\"\nEraRewardClaimed tracks reward claiming progress for each indexer-delegator pair.\nMaintains the last successfully claimed era to optimize future claim operations\nby avoiding repeated scanning of already processed eras.\n\"\"\"\ntype EraRewardClaimed @entity {\n  \"\"\"\n  Composite ID: indexer_address:delegator_address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Last era number for which rewards were successfully claimed\n  Used as starting point for next claim operation (lastClaimedEra + 1)\n  \"\"\"\n  lastClaimedEra: Int!\n}\n\n\"\"\"\nIndexerStakeSummary provides aggregated staking data for individual indexers and global totals.\nMaintains both current era and next era stake amounts since stake changes typically take effect\nin the following era. ID '0x00' represents global aggregation across all indexers.\n\"\"\"\ntype IndexerStakeSummary @entity {\n  \"\"\"\n  Indexer address for individual summary, or '0x00' for global aggregation\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Era this summary is associated with\n  \"\"\"\n  era: Era!\n  \"\"\"\n  Era index as integer\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Total stake amount for current era (indexerStake + delegatorStake)\n  \"\"\"\n  totalStake: BigInt!\n  \"\"\"\n  Self-stake amount by indexer for current era\n  \"\"\"\n  indexerStake: BigInt!\n  \"\"\"\n  Total delegated stake amount for current era\n  \"\"\"\n  delegatorStake: BigInt!\n  \"\"\"\n  Total stake amount for next era (pending changes)\n  \"\"\"\n  nextTotalStake: BigInt!\n  \"\"\"\n  Self-stake amount by indexer for next era (pending changes)\n  \"\"\"\n  nextIndexerStake: BigInt!\n  \"\"\"\n  Total delegated stake amount for next era (pending changes)\n  \"\"\"\n  nextDelegatorStake: BigInt!\n}\n\n\"\"\"\nIndexerStake provides immutable historical snapshots of staking data per indexer per era.\nCreated from IndexerStakeSummary data when stake changes occur. Maintains separate records\nfor individual indexers and global aggregations across all indexers.\n\"\"\"\ntype IndexerStake @entity {\n  \"\"\"\n  Individual indexer: indexer_address:era_id, Global aggregation: era_id (with indexerId='0x00')\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Reference to the indexer (or null for global aggregation records)\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Era this stake snapshot represents\n  \"\"\"\n  era: Era!\n  \"\"\"\n  Era index as integer\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Total stake amount for this era (indexerStake + delegatorStake)\n  \"\"\"\n  totalStake: BigInt!\n  \"\"\"\n  Self-stake amount by indexer for this era\n  \"\"\"\n  indexerStake: BigInt!\n  \"\"\"\n  Total delegated stake amount for this era\n  \"\"\"\n  delegatorStake: BigInt!\n}\n\n\"\"\"\nEraStake tracks granular stake amounts for each delegator-indexer pair per era.\nProvides the most detailed historical staking data, showing exactly how much\neach delegator has staked to each indexer in every era. Used as foundation\nfor precise reward calculations and stake analytics.\n\"\"\"\ntype EraStake @entity {\n  \"\"\"\n  Composite ID: indexer_address:delegator_address:era_id\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer receiving the stake\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Delegator providing the stake\n  \"\"\"\n  delegator: Delegator!\n  \"\"\"\n  Era this stake amount applies to\n  \"\"\"\n  era: Era!\n  \"\"\"\n  Era index as integer\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Stake amount from this delegator to this indexer in this era\n  \"\"\"\n  stake: BigInt!\n}\n\n\"\"\"\nEraStakeUpdate serves as an optimization index for EraStake creation.\nTracks the last era when each delegator-indexer pair had a stake update,\nenabling efficient retrieval of baseline stake amounts without scanning\nmultiple historical eras.\n\"\"\"\ntype EraStakeUpdate @entity {\n  \"\"\"\n  Composite ID: indexer_address:delegator_address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Last era when this delegator-indexer pair had a stake update\n  Used to quickly locate the most recent EraStake record for baseline calculation\n  \"\"\"\n  lastUpdateEra: Era!\n}\n\n\"\"\"\nSqtoken tracks SQT token supply statistics and holder relationships.\nMaintains both total supply (all minted tokens) and circulating supply \n(excluding tokens held by reserved contracts like treasury and airdropper).\nUpdated in real-time through L2SQToken Transfer event monitoring.\n\"\"\"\ntype Sqtoken @entity {\n  \"\"\"\n  Token contract address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Total token supply (increased by mint, decreased by burn)\n  \"\"\"\n  totalSupply: BigInt!\n  \"\"\"\n  Circulating supply excluding reserved contract holdings (treasury, airdropper)\n  Calculated by tracking transfers in/out of reserved addresses\n  \"\"\"\n  circulatingSupply: BigInt!\n  \"\"\"\n  All token holders for this token\n  \"\"\"\n  tokenHolders: [TokenHolder] @derivedFrom(field: \"token\")\n}\n\n\"\"\"\nTokenHolder tracks individual SQT token holder balances.\nUpdated in real-time through L2SQToken Transfer event processing.\nAutomatically created when first receiving tokens, balance updated on transfers.\nSkips zero address (mint/burn operations) as these are not actual holders.\n\"\"\"\ntype TokenHolder @entity {\n  \"\"\"\n  Token holder wallet address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Current token balance for this holder\n  Updated on every transfer in/out\n  \"\"\"\n  balance: BigInt!\n  \"\"\"\n  Reference to the SQT token contract\n  \"\"\"\n  token: Sqtoken!\n}\n\n\"\"\"\nTransfer records all SQT token transfer events from L2SQToken contract.\nCaptures complete transfer details for audit trail and balance tracking.\nUsed to maintain TokenHolder balances and Sqtoken supply statistics.\n\"\"\"\ntype Transfer @entity {\n  \"\"\"\n  Unique identifier: transaction hash + log index\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Amount of tokens transferred\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Sender address (zero address for minting)\n  \"\"\"\n  from: String!\n  \"\"\"\n  Recipient address (zero address for burning)\n  \"\"\"\n  to: String!\n  \"\"\"\n  Transaction hash containing this transfer\n  \"\"\"\n  txHash: String!\n  \"\"\"\n  Block timestamp when transfer occurred\n  \"\"\"\n  timestamp: Date!\n  \"\"\"\n  Block number containing this transfer\n  \"\"\"\n  blockheight: BigInt!\n}\n\n\"\"\"\nOffer represents a consumer's request for indexing services with specific requirements.\nConsumers create offers specifying deployment, pricing, and indexer requirements.\nIndexers can accept offers to establish service agreements.\nTracks acceptance progress and withdrawal status.\n\"\"\"\ntype Offer @entity {\n  \"\"\"\n  Unique offer identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Consumer wallet address creating this offer\n  \"\"\"\n  consumer: String! @index\n  \"\"\"\n  Deployment being offered for indexing\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Pricing template defining service terms\n  \"\"\"\n  planTemplate: PlanTemplate!\n  \"\"\"\n  Security deposit amount locked by consumer\n  \"\"\"\n  deposit: BigInt!\n  \"\"\"\n  Minimum block height for indexer acceptance\n  \"\"\"\n  minimumAcceptHeight: BigInt!\n  \"\"\"\n  Minimum stake amount required from accepting indexers\n  \"\"\"\n  minimumStakingAmount: BigInt!\n  \"\"\"\n  Offer expiration date\n  \"\"\"\n  expireDate: Date! @index\n  \"\"\"\n  Maximum number of indexers allowed to accept\n  \"\"\"\n  limit: Int!\n  \"\"\"\n  Current number of indexers who have accepted\n  \"\"\"\n  accepted: Int!\n  \"\"\"\n  Whether the indexer limit has been reached\n  \"\"\"\n  reachLimit: Boolean!\n  \"\"\"\n  Whether deposit has been withdrawn (via cancel event)\n  \"\"\"\n  withdrawn: Boolean!\n  \"\"\"\n  Penalty amount deducted on withdrawal\n  \"\"\"\n  withdrawPenalty: BigInt\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nAcceptedOffer links indexers to the specific offers they have accepted.\nCreated when an indexer accepts a consumer's offer, establishing the relationship\nbetween indexer, offer, and the resulting service agreement.\n\"\"\"\ntype AcceptedOffer @entity {\n  \"\"\"\n  Composite ID: offerID:indexer\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer who accepted this offer\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  The offer that was accepted\n  \"\"\"\n  offer: Offer!\n  \"\"\"\n  Service agreement created from this acceptance\n  \"\"\"\n  serviceAgreement: ServiceAgreement!\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nTotalLock tracks network-wide aggregated delegation and stake amounts.\nMaintains era-based snapshots of total locked tokens across all indexers.\nUses flattened era fields for efficient AI/LLM analysis and queries.\n\"\"\"\ntype TotalLock @entity {\n  \"\"\"\n  Fixed identifier: 'TotalLock'\n  \"\"\"\n  id: ID!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use totalDelegationEra, totalDelegationEraValue, totalDelegationEraValueAfter instead\n  \"\"\"\n  totalDelegation: EraValue!\n  \"\"\"\n  Era when total delegation amount was last updated\n  \"\"\"\n  totalDelegationEra: Int!\n  \"\"\"\n  Total delegation amount at totalDelegationEra\n  \"\"\"\n  totalDelegationEraValue: BigInt!\n  \"\"\"\n  Current total delegation amount (use if currentEra > totalDelegationEra)\n  \"\"\"\n  totalDelegationEraValueAfter: BigInt!\n  \"\"\"\n  AI/LLM Warning: Do not use this field for filtering or queries. Use totalStakeEra, totalStakeEraValue, totalStakeEraValueAfter instead\n  \"\"\"\n  totalStake: EraValue!\n  \"\"\"\n  Era when total stake amount was last updated\n  \"\"\"\n  totalStakeEra: Int!\n  \"\"\"\n  Total stake amount at totalStakeEra\n  \"\"\"\n  totalStakeEraValue: BigInt!\n  \"\"\"\n  Current total stake amount (use if currentEra > totalStakeEra)\n  \"\"\"\n  totalStakeEraValueAfter: BigInt!\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nException records errors that occur during event processing.\nCaptures handler failures for debugging and monitoring purposes.\nUsed to track and analyze system reliability issues.\n\"\"\"\ntype Exception @entity {\n  \"\"\"\n  Unique identifier: eventBlock:txhash\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Name of the event handler that failed\n  \"\"\"\n  handler: String!\n  \"\"\"\n  Error message describing the failure\n  \"\"\"\n  error: String!\n}\n\n\"\"\"\nStateChannel represents payment channels between consumers and indexers.\nManages off-chain payment flow for query services with on-chain settlement.\nTracks channel lifecycle, spending, and termination conditions.\n\"\"\"\ntype StateChannel @entity {\n  \"\"\"\n  Unique state channel identifier\n  \"\"\"\n  id: ID!\n\n  \"\"\"\n  Indexer address providing the service\n  \"\"\"\n  indexer: String! @index\n  \"\"\"\n  Consumer address using the service\n  \"\"\"\n  consumer: String! @index\n  \"\"\"\n  Optional agent address managing the channel\n  \"\"\"\n  agent: String\n  \"\"\"\n  Current channel status\n  \"\"\"\n  status: ChannelStatus!\n  \"\"\"\n  Deployment being served through this channel\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Real total amount allocated to this channel\n  \"\"\"\n  realTotal: BigInt!\n  \"\"\"\n  Total amount available in the channel\n  \"\"\"\n  total: BigInt!\n  \"\"\"\n  Price per query unit\n  \"\"\"\n  price: BigInt!\n  \"\"\"\n  Amount already spent from the channel\n  \"\"\"\n  spent: BigInt!\n  \"\"\"\n  Whether the channel is in final state\n  \"\"\"\n  isFinal: Boolean!\n  \"\"\"\n  Channel expiration date\n  \"\"\"\n  expiredAt: Date! @index\n  \"\"\"\n  When the channel was terminated (if applicable)\n  \"\"\"\n  terminatedAt: Date\n  \"\"\"\n  Whether termination was initiated by indexer\n  \"\"\"\n  terminateByIndexer: Boolean!\n  \"\"\"\n  Channel creation/start time\n  \"\"\"\n  startTime: Date!\n\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nDisputes tracks dispute cases between network participants.\nHandles slashing mechanisms and dispute resolution processes.\nManages fisherman reports and runner penalties in the network.\n\"\"\"\ntype Disputes @entity {\n  \"\"\"\n  Unique dispute identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Type of dispute being raised\n  \"\"\"\n  disputeType: DisputeType!\n  \"\"\"\n  Current state of the dispute\n  \"\"\"\n  state: DisputeState!\n  \"\"\"\n  Whether the dispute has been finalized\n  \"\"\"\n  isFinalized: Boolean!\n\n  \"\"\"\n  Address of the fisherman who raised the dispute\n  \"\"\"\n  fisherman: String!\n  \"\"\"\n  Address of the runner being disputed\n  \"\"\"\n  runner: String!\n\n  \"\"\"\n  Amount to be slashed from the runner\n  \"\"\"\n  slashAmount: BigInt\n  \"\"\"\n  Amount to be returned if dispute is invalid\n  \"\"\"\n  returnAmount: BigInt\n}\n\n\"\"\"\nPriceOracle tracks token price updates from oracle feeds.\nRecords price changes for token pairs used in network calculations.\nMaintains historical price data for accurate reward and payment calculations.\n\"\"\"\ntype PriceOracle @entity {\n  \"\"\"\n  Unique oracle identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Source token address\n  \"\"\"\n  fromToken: String!\n  \"\"\"\n  Target token address\n  \"\"\"\n  toToken: String!\n  \"\"\"\n  Price before the update\n  \"\"\"\n  beforePrice: BigInt!\n  \"\"\"\n  Price after the update\n  \"\"\"\n  afterPrice: BigInt!\n  \"\"\"\n  Block number when price update occurred\n  \"\"\"\n  createdBlock: Int\n}\n\nenum OrderStatus {\n  ACTIVE\n  INACTIVE\n}\n\n\"\"\"\nOrder represents token swap orders in the network's built-in DEX.\nTracks SQT token trading pairs and order execution status.\nManages order lifecycle from creation to completion or cancellation.\n\"\"\"\ntype Order @entity {\n  \"\"\"\n  Unique order identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Address that created the order\n  \"\"\"\n  sender: String!\n  \"\"\"\n  Token address to give/sell\n  \"\"\"\n  tokenGive: String!\n  \"\"\"\n  Token address to get/buy\n  \"\"\"\n  tokenGet: String!\n  \"\"\"\n  Amount of tokens to give\n  \"\"\"\n  amountGive: BigInt!\n  \"\"\"\n  Amount of tokens to get\n  \"\"\"\n  amountGet: BigInt!\n  \"\"\"\n  Remaining balance of tokenGive available for swapping\n  \"\"\"\n  tokenGiveBalance: BigInt!\n  \"\"\"\n  Order status (Inactive when cancelled)\n  \"\"\"\n  status: OrderStatus!\n  \"\"\"\n  Order creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nCache provides simple key-value storage for temporary data.\nUsed to store computed values and state information for efficient access.\nEnables caching of frequently accessed or expensive-to-compute data.\n\"\"\"\ntype Cache @entity {\n  \"\"\"\n  Cache key identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Cached value as string\n  \"\"\"\n  value: String!\n}\n\n\"\"\"\nDeploymentBooster tracks consumer boost allocations to specific deployments.\nRecords individual boost transactions including additions and removals.\nLinks consumers to their boosted deployments for reward allocation.\nNote: project field is redundant (can be accessed via deployment.project) but kept for query optimization.\n\"\"\"\ntype DeploymentBooster @entity {\n  \"\"\"\n  Composite ID: deploymentId:consumer:txHash:logIndex\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project being boosted (redundant field for query optimization, accessible via deployment.project)\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Specific deployment receiving the boost\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Consumer providing the boost\n  \"\"\"\n  consumer: String! @index\n  \"\"\"\n  Amount added in this boost transaction\n  \"\"\"\n  amountAdded: BigInt!\n  \"\"\"\n  Amount removed in this boost transaction\n  \"\"\"\n  amountRemoved: BigInt!\n  \"\"\"\n  Era index when boost was applied\n  \"\"\"\n  eraIdx: Int! @index\n  \"\"\"\n  Transaction creation timestamp\n  \"\"\"\n  createAt: Date!\n}\n\n\"\"\"\nDeploymentBoosterSummary aggregates all boost transactions by consumer per deployment.\nMaintains running totals of boost amounts for efficient querying.\nUpdated whenever consumer adds or removes boosts from a deployment.\nNote: project field is redundant (can be accessed via deployment.project) but kept for query optimization.\n\"\"\"\ntype DeploymentBoosterSummary @entity {\n  \"\"\"\n  Composite ID: deploymentId:consumer\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project being boosted (redundant field for query optimization, accessible via deployment.project)\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Deployment receiving boosts\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Consumer providing boosts\n  \"\"\"\n  consumer: String! @index\n  \"\"\"\n  Total amount added across all boost transactions\n  \"\"\"\n  totalAdded: BigInt!\n  \"\"\"\n  Total amount removed across all boost transactions\n  \"\"\"\n  totalRemoved: BigInt!\n  \"\"\"\n  Current net boost amount (totalAdded - totalRemoved)\n  \"\"\"\n  totalAmount: BigInt!\n  \"\"\"\n  When first boost was created\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last boost transaction timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nIndexerAllocation tracks indexer stake allocations to specific deployments.\nRecords individual allocation transactions including additions and removals.\nLinks indexers to their allocated deployments for reward calculation.\n\"\"\"\ntype IndexerAllocation @entity {\n  \"\"\"\n  Composite ID: deploymentId:indexerId:txHash\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project being allocated to\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Specific deployment receiving allocation\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Indexer making the allocation\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Amount added in this allocation transaction\n  \"\"\"\n  amountAdded: BigInt!\n  \"\"\"\n  Amount removed in this allocation transaction\n  \"\"\"\n  amountRemoved: BigInt!\n  \"\"\"\n  Era index when allocation was made\n  \"\"\"\n  eraIdx: Int! @index\n  \"\"\"\n  Transaction creation timestamp\n  \"\"\"\n  createAt: Date!\n}\n\n\"\"\"\nIndexerAllocationSummary aggregates all allocation transactions by indexer per deployment.\nMaintains running totals of allocation amounts for efficient querying.\nUpdated whenever indexer adds or removes allocations from a deployment.\nNote: project field is redundant (can be accessed via deployment.project) but kept for query optimization.\n\"\"\"\ntype IndexerAllocationSummary @entity {\n  \"\"\"\n  Composite ID: deploymentId:indexerId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project being allocated to (redundant field for query optimization, accessible via deployment.project)\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Deployment receiving allocations\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Indexer making allocations\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Total amount added across all allocation transactions\n  \"\"\"\n  totalAdded: BigInt!\n  \"\"\"\n  Total amount removed across all allocation transactions\n  \"\"\"\n  totalRemoved: BigInt!\n  \"\"\"\n  Current net allocation amount (totalAdded - totalRemoved)\n  \"\"\"\n  totalAmount: BigInt!\n  \"\"\"\n  When first allocation was created\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last allocation transaction timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nIndexerAllocationOverflow tracks periods when indexer allocations exceed their capacity.\nRecords overflow duration and era ranges for penalty calculations.\nUsed to identify indexers operating beyond their staking limits.\n\"\"\"\ntype IndexerAllocationOverflow @entity {\n  \"\"\"\n  Composite ID: indexerId:txHash\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer experiencing allocation overflow\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  When overflow period started\n  \"\"\"\n  overflowStart: Date!\n  \"\"\"\n  When overflow period ended\n  \"\"\"\n  overflowEnd: Date! @index\n  \"\"\"\n  Duration of overflow in seconds\n  \"\"\"\n  overflowTime: BigInt! @index\n  \"\"\"\n  Era index when overflow started\n  \"\"\"\n  eraIdxStart: Int! @index\n  \"\"\"\n  Era index when overflow ended\n  \"\"\"\n  eraIdxEnd: Int! @index\n  \"\"\"\n  Record creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nIndexerLatestAllocationOverflow points to the most recent allocation overflow for each indexer.\nProvides quick access to current overflow status without scanning all overflow records.\nUpdated whenever a new overflow period starts for an indexer.\n\"\"\"\ntype IndexerLatestAllocationOverflow @entity {\n  \"\"\"\n  Indexer ID\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Reference to the latest allocation overflow record\n  \"\"\"\n  overflowId: IndexerAllocationOverflow!\n  \"\"\"\n  When this reference was created\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  When this reference was last updated\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nIndexerMissedLabor tracks labor requirements missed by indexers for specific deployments.\nRecords penalties applied when indexers fail to meet service obligations.\nUsed for calculating reduced rewards and performance metrics.\n\"\"\"\ntype IndexerMissedLabor @entity {\n  \"\"\"\n  Composite ID: deploymentId:indexerId:txHash\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Deployment where labor was missed\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Indexer who missed the labor requirement\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Amount of missed labor/service requirement\n  \"\"\"\n  missedLabor: BigInt!\n  \"\"\"\n  Era index when labor was missed\n  \"\"\"\n  eraIdx: Int! @index\n  \"\"\"\n  Record creation timestamp\n  \"\"\"\n  createAt: Date!\n}\n\n\"\"\"\nIndexerAllocationReward tracks rewards earned by indexers for their deployment allocations.\nRecords both earned rewards and any burnt amounts due to penalties.\nLinks indexer performance to specific deployments and eras.\n\"\"\"\ntype IndexerAllocationReward @entity {\n  \"\"\"\n  Composite ID: deploymentId:indexerId:txHash\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project generating the reward\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Deployment for which reward was earned\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Indexer earning the reward\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Reward amount earned\n  \"\"\"\n  reward: BigInt!\n  \"\"\"\n  Amount burnt due to penalties or slashing\n  \"\"\"\n  burnt: BigInt!\n  \"\"\"\n  Era index when reward was distributed\n  \"\"\"\n  eraIdx: Int! @index\n  \"\"\"\n  Reward distribution timestamp\n  \"\"\"\n  createAt: Date!\n}\n\n\"\"\"\nIndexerAllocationRewardSummary aggregates all allocation rewards by indexer per deployment.\nMaintains running totals of rewards and burnt amounts for efficient querying.\nUpdated whenever indexer receives new allocation rewards or penalties.\nNote: project field is redundant (can be accessed via deployment.project) but kept for query optimization.\n\"\"\"\ntype IndexerAllocationRewardSummary @entity {\n  \"\"\"\n  Composite ID: deploymentId:indexerId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project generating rewards (redundant field for query optimization, accessible via deployment.project)\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Deployment for which rewards were earned\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Indexer earning rewards\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Total rewards earned across all allocation periods\n  \"\"\"\n  totalReward: BigInt!\n  \"\"\"\n  Total amount burnt across all penalties\n  \"\"\"\n  totalBurnt: BigInt!\n  \"\"\"\n  When first reward was recorded\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last reward update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nConsumerQueryReward tracks spending and refunds for consumer query orders.\nRecords individual order transactions including payments and refunds.\nLinks consumer spending to specific deployments and order types for reward distribution.\n\"\"\"\ntype ConsumerQueryReward @entity {\n  \"\"\"\n  Composite ID: deploymentId:consumer:orderType:orderId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project being queried\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Deployment handling the queries\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Consumer making the queries\n  \"\"\"\n  consumer: String! @index\n  \"\"\"\n  Type of order (boost, agreement, etc.)\n  \"\"\"\n  orderType: OrderType!\n  \"\"\"\n  Specific order identifier\n  \"\"\"\n  orderId: String!\n  \"\"\"\n  Amount spent on queries\n  \"\"\"\n  spent: BigInt!\n  \"\"\"\n  Amount refunded to consumer\n  \"\"\"\n  refunded: BigInt!\n  \"\"\"\n  Order creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nConsumerQueryRewardSummary aggregates all query spending by consumer per deployment and order type.\nMaintains running totals of spent and refunded amounts for efficient querying.\nUpdated whenever consumer makes new query payments or receives refunds.\nNote: project field is redundant (can be accessed via deployment.project) but kept for query optimization.\n\"\"\"\ntype ConsumerQueryRewardSummary @entity {\n  \"\"\"\n  Composite ID: deploymentId:consumer:orderType\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Project being queried (redundant field for query optimization, accessible via deployment.project)\n  \"\"\"\n  project: Project!\n  \"\"\"\n  Deployment handling queries\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Consumer making queries\n  \"\"\"\n  consumer: String! @index\n  \"\"\"\n  Type of orders being summarized\n  \"\"\"\n  orderType: OrderType!\n  \"\"\"\n  Total amount spent across all orders\n  \"\"\"\n  totalSpent: BigInt!\n  \"\"\"\n  Total amount refunded across all orders\n  \"\"\"\n  totalRefunded: BigInt!\n  \"\"\"\n  When first order was created\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last order update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\nenum AirdropClaimStatus {\n  CLAIMED\n  UNCLAIMED\n}\n\n\"\"\"\nAirdrop represents token distribution rounds to eligible network participants.\nTracks airdrop campaign details including timing and withdrawal status.\nManages distribution of SQT tokens to community members and early adopters.\nNote: Uses String timestamps instead of Date for legacy compatibility with airdrop system.\n\"\"\"\ntype Airdrop @entity {\n  \"\"\"\n  Airdrop round identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Token contract address for airdrop\n  \"\"\"\n  tokenAddress: String!\n  \"\"\"\n  When airdrop claims become available\n  \"\"\"\n  startTime: Date!\n  \"\"\"\n  When airdrop claims expire\n  \"\"\"\n  endTime: Date!\n  \"\"\"\n  Amount withdrawn by admin (if any)\n  \"\"\"\n  withdrawAmount: BigInt\n  \"\"\"\n  Whether admin has withdrawn unclaimed tokens\n  \"\"\"\n  hasWithdrawn: Boolean\n  \"\"\"\n  Airdrop creation timestamp (String format for legacy compatibility)\n  \"\"\"\n  createAt: String\n  \"\"\"\n  Last update timestamp (String format for legacy compatibility)\n  \"\"\"\n  updateAt: String\n}\n\n\"\"\"\nAirdropUser tracks individual user eligibility and claims for specific airdrop rounds.\nRecords allocation amounts and claim status for each eligible participant.\nUpdated when users claim their allocated tokens.\n\"\"\"\ntype AirdropUser @entity {\n  \"\"\"\n  Composite ID: roundId:userAccount\n  \"\"\"\n  id: ID!\n  \"\"\"\n  User wallet address eligible for airdrop\n  \"\"\"\n  user: String!\n  \"\"\"\n  Reference to the airdrop round\n  \"\"\"\n  airdrop: Airdrop!\n  \"\"\"\n  Amount allocated to this user\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Claim status (CLAIMED or UNCLAIMED)\n  \"\"\"\n  status: AirdropClaimStatus!\n  \"\"\"\n  When allocation was created (String format for legacy compatibility)\n  \"\"\"\n  createAt: String\n  \"\"\"\n  When status was last updated (String format for legacy compatibility)\n  \"\"\"\n  updateAt: String\n}\n\n\"\"\"\nAirdropAmount aggregates total airdrop allocations and claims per user across all rounds.\nMaintains running totals of all airdrop tokens allocated and claimed by each user.\nProvides summary view of user's complete airdrop participation.\n\"\"\"\ntype AirdropAmount @entity {\n  \"\"\"\n  User wallet address\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Total airdrop amount across all rounds (claimed + unclaimed + locked + unlocked)\n  \"\"\"\n  totalAirdropAmount: BigInt!\n  \"\"\"\n  Total amount claimed by user across all rounds\n  \"\"\"\n  claimedAmount: BigInt!\n  \"\"\"\n  When first airdrop allocation was created (String format for legacy compatibility)\n  \"\"\"\n  createAt: String\n  \"\"\"\n  Last update timestamp (String format for legacy compatibility)\n  \"\"\"\n  updateAt: String\n}\n\n\"\"\"\nWithdraw tracks token withdrawal transactions from contracts.\nRecords withdrawal events with composite indexing for efficient sender/block queries.\nSeparate from delegation withdrawals - handles general contract withdrawals.\n\"\"\"\ntype Withdraw @entity @compositeIndexes(fields: [[\"sender\", \"blockheight\"]]) {\n  \"\"\"\n  Composite ID: txHash:logIndex\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Transaction hash containing the withdrawal\n  \"\"\"\n  txHash: String!\n  \"\"\"\n  Address initiating the withdrawal\n  \"\"\"\n  sender: String!\n  \"\"\"\n  Amount being withdrawn\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Withdrawal timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Block height containing the withdrawal\n  \"\"\"\n  blockheight: Int!\n}\n\n\"\"\"\nEraIndexerApy tracks indexer and delegator annual percentage yields for each era.\nCalculates APY based on rewards earned relative to staked amounts.\nAPY Formula: ((reward * 10^18) / 7 days * 365 days) / stake\nAll APY values are scaled by 10^18 and assume 7-day era periods.\nProvides performance metrics for indexer evaluation and delegation decisions.\n\"\"\"\ntype EraIndexerApy @entity {\n  \"\"\"\n  Composite ID: indexerId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Era index for this APY calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Indexer whose APY is being tracked\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Total rewards earned by indexer in this era\n  \"\"\"\n  indexerReward: BigInt!\n  \"\"\"\n  Annualized percentage yield for indexer (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  indexerApy: BigInt!\n  \"\"\"\n  Total rewards distributed to delegators in this era\n  \"\"\"\n  delegatorReward: BigInt!\n  \"\"\"\n  Annualized percentage yield for delegators (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  delegatorApy: BigInt!\n  \"\"\"\n  APY calculation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nIndexerApySummary provides the latest APY summary for each indexer.\nMaintains current APY metrics without historical era details.\nUpdated with each new era to reflect most recent performance.\n\"\"\"\ntype IndexerApySummary @entity {\n  \"\"\"\n  Indexer identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Latest era index used for APY calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Indexer whose APY is summarized\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Latest indexer reward amount\n  \"\"\"\n  indexerReward: BigInt!\n  \"\"\"\n  Current annualized percentage yield for indexer (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  indexerApy: BigInt!\n  \"\"\"\n  Latest delegator reward amount\n  \"\"\"\n  delegatorReward: BigInt!\n  \"\"\"\n  Current annualized percentage yield for delegators (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  delegatorApy: BigInt!\n  \"\"\"\n  Summary creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last APY update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nEraIndexerDeploymentApy tracks indexer APY performance for specific deployments per era.\nBreaks down rewards by type (agreement, flex plan, allocation) for detailed analysis.\nIncludes detailed APY calculation metadata with stake allocation tracking for precise yield calculation.\nThe apyCalc* fields track allocation changes during the era to compute time-weighted average stake.\nAPY values are scaled by 10^18 like other APY entities.\n\"\"\"\ntype EraIndexerDeploymentApy @entity {\n  \"\"\"\n  Composite ID: indexerId:deploymentId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Era index for this APY calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Indexer earning rewards\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Deployment generating rewards\n  \"\"\"\n  deployment: Deployment!\n  \"\"\"\n  Rewards from service agreements\n  \"\"\"\n  agreementReward: BigInt!\n  \"\"\"\n  Rewards from flexible plan services\n  \"\"\"\n  flexPlanReward: BigInt!\n  \"\"\"\n  Rewards from stake allocation\n  \"\"\"\n  allocationReward: BigInt!\n  \"\"\"\n  Calculated annualized percentage yield (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  apy: BigInt!\n  \"\"\"\n  Base allocation amount used for APY calculation (current stake amount)\n  \"\"\"\n  apyCalcAllocation: BigInt!\n  \"\"\"\n  Allocation amount removed during this era (for precise APY calculation)\n  \"\"\"\n  apyCalcRemoval: BigInt!\n  \"\"\"\n  Allocation amount added during this era (for precise APY calculation)\n  \"\"\"\n  apyCalcAdded: BigInt!\n  \"\"\"\n  Timestamp when allocation was recorded for APY calculation reference\n  \"\"\"\n  apyCalcAllocationRecordAt: Date!\n  \"\"\"\n  JSON string containing detailed APY calculation history and intermediate values\n  \"\"\"\n  apyCalcHistory: String!\n  \"\"\"\n  APY record creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nEraDelegatorIndexerApy tracks APY earned by delegators from specific indexers per era.\nCalculates delegator returns based on rewards received relative to delegated stake.\nProvides performance metrics for delegation strategy evaluation.\n\"\"\"\ntype EraDelegatorIndexerApy @entity {\n  \"\"\"\n  Composite ID: delegatorId:indexerId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Era index for this APY calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Delegator earning rewards\n  \"\"\"\n  delegator: Delegator!\n  \"\"\"\n  Indexer receiving delegation\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Reward amount earned by delegator\n  \"\"\"\n  reward: BigInt!\n  \"\"\"\n  Stake amount delegated to indexer\n  \"\"\"\n  stake: BigInt!\n  \"\"\"\n  Annualized percentage yield for this delegation (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  apy: BigInt!\n  \"\"\"\n  APY record creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nEraDelegatorApy tracks overall APY earned by delegators across all their delegations per era.\nAggregates rewards from all indexers delegated to for total delegator performance.\nProvides comprehensive delegator yield metrics.\n\"\"\"\ntype EraDelegatorApy @entity {\n  \"\"\"\n  Composite ID: delegatorId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Era index for this APY calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Delegator earning rewards\n  \"\"\"\n  delegator: Delegator!\n  \"\"\"\n  Total rewards earned across all delegations\n  \"\"\"\n  reward: BigInt!\n  \"\"\"\n  Overall annualized percentage yield (scaled by 10^18, divide by 10^18 for actual percentage)\n  \"\"\"\n  apy: BigInt!\n  \"\"\"\n  APY record creation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nIndexerStakeWeight tracks the relative weight of indexer stakes for reward distribution.\nDetermines indexer's share of era rewards based on their total stake relative to network.\nUpdated each era for accurate reward calculations.\n\"\"\"\ntype IndexerStakeWeight @entity {\n  \"\"\"\n  Indexer identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer whose stake weight is tracked\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Era index for this weight calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Calculated stake weight for reward distribution\n  \"\"\"\n  weight: BigInt!\n  \"\"\"\n  Weight calculation timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last update timestamp\n  \"\"\"\n  updateAt: Date!\n}\n\n\"\"\"\nEraDeploymentRewards aggregates all reward types earned by a deployment in a specific era.\nBreaks down rewards by source: allocation, query, agreement, and state channel rewards.\nTracks change history for debugging multi-source updates.\n\"\"\"\ntype EraDeploymentRewards @entity {\n  \"\"\"\n  Composite ID: deploymentId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Deployment identifier earning rewards\n  \"\"\"\n  deploymentId: String!\n  \"\"\"\n  Era index for reward calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Total rewards earned across all sources\n  \"\"\"\n  totalRewards: BigInt!\n  \"\"\"\n  Rewards from indexer stake allocations\n  \"\"\"\n  allocationRewards: BigInt!\n  \"\"\"\n  Rewards from consumer query payments\n  \"\"\"\n  queryRewards: BigInt!\n  \"\"\"\n  Rewards from service agreements\n  \"\"\"\n  agreementRewards: BigInt!\n  \"\"\"\n  Rewards from state channel settlements\n  \"\"\"\n  stateChannelRewards: BigInt!\n  \"\"\"\n  Change history for debugging multi-source updates (format: xxx:event,xxx:event)\n  \"\"\"\n  changesHeight: String\n}\n\n\"\"\"\nIndexerEraDeploymentRewards tracks rewards earned by specific indexers for specific deployments per era.\nBreaks down indexer rewards by source type for detailed performance analysis.\nTracks change history for debugging multi-source updates.\n\"\"\"\ntype IndexerEraDeploymentRewards @entity {\n  \"\"\"\n  Composite ID: indexerId:deploymentId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer earning the rewards\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Deployment generating the rewards\n  \"\"\"\n  deploymentId: String!\n  \"\"\"\n  Era index for reward calculation\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Total rewards earned by this indexer for this deployment\n  \"\"\"\n  totalRewards: BigInt!\n  \"\"\"\n  Rewards from stake allocation to this deployment\n  \"\"\"\n  allocationRewards: BigInt!\n  \"\"\"\n  Rewards from serving queries for this deployment\n  \"\"\"\n  queryRewards: BigInt!\n  \"\"\"\n  Rewards from service agreements for this deployment\n  \"\"\"\n  agreementRewards: BigInt!\n  \"\"\"\n  Rewards from state channel settlements for this deployment\n  \"\"\"\n  stateChannelRewards: BigInt!\n  \"\"\"\n  Change history for debugging multi-source updates (format: xxx:event,xxx:event)\n  \"\"\"\n  changesHeight: String\n}\n\n\"\"\"\nIndexerLaborHistory tracks the labor/work performed by indexers for deployments per era.\nRecords the amount of work completed for performance tracking and reward calculations.\nProvides historical view of indexer activity and service delivery.\n\"\"\"\ntype IndexerLaborHistory @entity {\n  \"\"\"\n  Composite ID: indexerId:deploymentId:eraId\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Indexer performing the labor\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Deployment for which labor was performed\n  \"\"\"\n  deploymentId: String!\n  \"\"\"\n  Era index when labor was performed\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Amount of labor/work performed\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  Labor record creation timestamp\n  \"\"\"\n  createAt: Date!\n}\n\n\"\"\"\nConsumerQuerySpent tracks incremental spending by consumers on query services.\nRecords each spending transaction with accumulating totals for billing tracking.\nLinks spending to specific indexers, deployments, and order types.\n\"\"\"\ntype ConsumerQuerySpent @entity {\n  \"\"\"\n  Transaction hash identifier\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Consumer making the payment\n  \"\"\"\n  consumer: String!\n  \"\"\"\n  Indexer providing the service\n  \"\"\"\n  indexer: Indexer!\n  \"\"\"\n  Deployment being queried\n  \"\"\"\n  deploymentId: String!\n  \"\"\"\n  Era index when spending occurred\n  \"\"\"\n  eraIdx: Int!\n  \"\"\"\n  Order type (StateChannel or Agreement)\n  \"\"\"\n  orderType: OrderType!\n  \"\"\"\n  Order identifier (StateChannel ID or Agreement ID)\n  \"\"\"\n  orderId: String!\n  \"\"\"\n  Incremental amount spent in this transaction\n  \"\"\"\n  spend: BigInt!\n  \"\"\"\n  Current accumulated total spent\n  \"\"\"\n  curAmount: BigInt!\n  \"\"\"\n  Spending transaction timestamp\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Change history for debugging (format: xxx:event,xxx:event)\n  \"\"\"\n  changesHeight: String\n}\n\n\"\"\"\nOrderSpent tracks total accumulated spending for specific orders.\nMaintains latest spending totals for StateChannels and ServiceAgreements.\nProvides quick access to order spending without scanning all transactions.\n\"\"\"\ntype OrderSpent @entity {\n  \"\"\"\n  Order identifier (StateChannel ID or Agreement ID)\n  \"\"\"\n  id: ID!\n  \"\"\"\n  Latest accumulated amount spent on this order\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  When spending tracking was created\n  \"\"\"\n  createAt: Date!\n  \"\"\"\n  Last spending update timestamp\n  \"\"\"\n  updateAt: Date!\n  \"\"\"\n  Era index when spending tracking was created\n  \"\"\"\n  createdAtEraIdx: Int\n  \"\"\"\n  Era index when last updated\n  \"\"\"\n  updateAtEraIdx: Int\n}\n\nenum VoteActivityType {\n  VOTE\n  WITHDRAW\n}\n\n\"\"\"\nProjectVote tracks user voting participation and balances for subnet projects.\nMaintains running totals of votes cast and withdrawn for each user per project.\nSupports subnet governance through token-based voting mechanism.\nNote: projectId is for subnet projects, NOT related to the Project entity in this schema.\n\"\"\"\ntype ProjectVote @entity {\n  \"\"\"\n  Composite ID: user_address:project_id\n  \"\"\"\n  id: ID!\n  \"\"\"\n  User wallet address participating in voting\n  \"\"\"\n  user: String! @index\n  \"\"\"\n  Subnet project identifier (bytes32 external ID, NOT related to Project entity)\n  \"\"\"\n  projectId: String! @index\n  \"\"\"\n  Total amount voted by this user for this project\n  \"\"\"\n  totalVoted: BigInt!\n  \"\"\"\n  Total amount withdrawn by this user from this project\n  \"\"\"\n  totalWithdrawn: BigInt!\n  \"\"\"\n  Current voting balance (totalVoted - totalWithdrawn)\n  \"\"\"\n  currentBalance: BigInt!\n  \"\"\"\n  When user first voted for this project\n  \"\"\"\n  firstVotedAt: Date!\n  \"\"\"\n  When user last voted for this project\n  \"\"\"\n  lastVotedAt: Date!\n  \"\"\"\n  When user last withdrew votes from this project\n  \"\"\"\n  lastWithdrawnAt: Date\n\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n\n\"\"\"\nProjectVoteActivity records individual voting and withdrawal activities.\nTracks all vote-related transactions for audit trail and historical analysis.\nProvides detailed activity log for subnet project governance.\nNote: projectId is for subnet projects, NOT related to the Project entity in this schema.\n\"\"\"\ntype ProjectVoteActivity @entity {\n  \"\"\"\n  Composite ID: transaction_hash:log_index\n  \"\"\"\n  id: ID!\n  \"\"\"\n  User performing the voting activity\n  \"\"\"\n  user: String! @index\n  \"\"\"\n  Subnet project identifier (bytes32 external ID, NOT related to Project entity)\n  \"\"\"\n  projectId: String! @index\n  \"\"\"\n  Type of activity (VOTE or WITHDRAW)\n  \"\"\"\n  activityType: VoteActivityType!\n  \"\"\"\n  Amount of tokens involved in the activity\n  \"\"\"\n  amount: BigInt!\n  \"\"\"\n  When the activity occurred\n  \"\"\"\n  timestamp: Date!\n  \"\"\"\n  Block height of the activity\n  \"\"\"\n  blockHeight: Int!\n  \"\"\"\n  Transaction hash containing the activity\n  \"\"\"\n  transactionHash: String!\n  \"\"\"\n  Block number when record was created\n  \"\"\"\n  createdBlock: Int\n  \"\"\"\n  Latest event details: topicHandler:blockNumber\n  \"\"\"\n  lastEvent: String\n}\n",
+  "node_type": "subql",
+  "manifest": {
+    "dataSources": [
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "NewEraStart(uint256 indexed era, address caller)"
+                ]
+              },
+              "handler": "handleNewEra",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "eraManager",
+          "address": "0xf80A8E45a13D2C116Aa8cFFEf3dcb6049cd8059e"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "RegisterIndexer(address indexed indexer, uint256 amount, bytes32 metadata)"
+                ]
+              },
+              "handler": "handleRegisterIndexer",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "UpdateMetadata(address indexed indexer, bytes32 metadata)"
+                ]
+              },
+              "handler": "handleUpdateIndexerMetadata",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "SetControllerAccount(address indexed indexer, address indexed controller)"
+                ]
+              },
+              "handler": "handleSetControllerAccount",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "UnregisterIndexer(address indexed indexer)"
+                ]
+              },
+              "handler": "handleUnregisterIndexer",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "SetCommissionRate(address indexed indexer, uint256 amount)"
+                ]
+              },
+              "handler": "handleSetCommissionRate",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "function": "setminimumStakingAmount(uint256 amount)"
+              },
+              "handler": "handleSetMinimumStakingAmount",
+              "kind": "ethereum/TransactionHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "indexerRegistry",
+          "address": "0xadED5DDFA892250018fE54DB8E8C6CAd45476DC9"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "DelegationAdded(address indexed source, address indexed runner, uint256 amount)"
+                ]
+              },
+              "handler": "handleAddDelegation",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "DelegationAdded2(address indexed source, address indexed runner, uint256 amount, bool instant)"
+                ]
+              },
+              "handler": "handleAddDelegation",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "DelegationRemoved(address indexed source, address indexed runner, uint256 amount)"
+                ]
+              },
+              "handler": "handleRemoveDelegation",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "UnbondRequested(address indexed source, address indexed runner, uint256 amount, uint256 index, uint8 _type)"
+                ]
+              },
+              "handler": "handleWithdrawRequested",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "UnbondWithdrawn(address indexed source, uint256 amount, uint256 fee, uint256 index)"
+                ]
+              },
+              "handler": "handleWithdrawClaimed",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "UnbondCancelled(address indexed source, address indexed runner, uint256 amount, uint256 index)"
+                ]
+              },
+              "handler": "handleWithdrawCancelled",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "function": "setIndexerLeverageLimit(uint256 _indexerLeverageLimit)"
+              },
+              "handler": "handleSetIndexerLeverageLimit",
+              "kind": "ethereum/TransactionHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "staking",
+          "address": "0x7A68b10EB116a8b71A9b6f77B32B47EB591B6Ded"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "Transfer(address indexed from, address indexed to, uint256 amount)"
+                ]
+              },
+              "handler": "handleTransfer",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "sqtoken",
+          "address": "0x858c50C3AF1913b0E849aFDB74617388a1a5340d"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "ProjectCreated(address indexed creator, uint256 indexed projectId, string projectMetadata, uint8 projectType, bytes32 deploymentId, bytes32 deploymentMetadata)"
+                ]
+              },
+              "handler": "handleProjectCreated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
+                ]
+              },
+              "handler": "handlerProjectTransferred",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ProjectMetadataUpdated(address indexed owner, uint256 indexed projectId, string metadata)"
+                ]
+              },
+              "handler": "handleProjectMetadataUpdated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ProjectDeploymentUpdated(address indexed owner, uint256 indexed projectId, bytes32 deploymentId, bytes32 metadata)"
+                ]
+              },
+              "handler": "handleProjectDeploymentUpdated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ProjectLatestDeploymentUpdated(address indexed owner, uint256 projectId, bytes32 deploymentId)"
+                ]
+              },
+              "handler": "handleProjectLatestDeploymentUpdated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ServiceStatusChanged(address indexed indexer, bytes32 indexed deploymentId, uint8 status)"
+                ]
+              },
+              "handler": "handleServiceStatusChanged",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "projectRegistry",
+          "address": "0x5499c960cc54563E7264Fb96be4E0907a93E825B"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "PlanTemplateCreated(uint256 indexed planTemplateId)"
+                ]
+              },
+              "handler": "handlePlanTemplateCreated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "PlanTemplateMetadataChanged(uint256 indexed planTemplateId, bytes32 metadata)"
+                ]
+              },
+              "handler": "handlePlanTemplateMetadataUpdated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "PlanTemplateStatusChanged(uint256 indexed planTemplateId, bool active)"
+                ]
+              },
+              "handler": "handlePlanTemplateStatusUpdated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "PlanCreated(uint256 indexed planId, address creator, bytes32 deploymentId, uint256 planTemplateId, uint256 price)"
+                ]
+              },
+              "handler": "handlePlanCreated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "PlanRemoved(uint256 indexed planId)"
+                ]
+              },
+              "handler": "handlePlanRemoved",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "planManager",
+          "address": "0xbF443a0474AE33C30c2A0dfbc608B0e374A59DcD"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "ClosedAgreementCreated(address indexed consumer, address indexed indexer, bytes32 indexed deploymentId, uint256 serviceAgreementId)"
+                ]
+              },
+              "handler": "handleServiceAgreementCreated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
+                ]
+              },
+              "handler": "handlerAgreementTransferred",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "serviceAgreementRegistry",
+          "address": "0xe86861fE07Bfb166FE1010467160ffFD70677403"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "DistributeRewards(address indexed runner, uint256 indexed eraIdx, uint256 rewards, uint256 commission)"
+                ]
+              },
+              "handler": "handleRewardsDistributed",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ClaimRewards(address indexed runner, address indexed delegator, uint256 rewards)"
+                ]
+              },
+              "handler": "handleRewardsClaimed",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "RewardsChanged(address indexed runner, uint256 indexed eraIdx, uint256 additions, uint256 removals)"
+                ]
+              },
+              "handler": "handleRewardsUpdated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "InstantRewards(address indexed runner, uint256 indexed eraIdx, uint256 token)"
+                ]
+              },
+              "handler": "handleInstantRewards",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "AgreementRewards(address indexed runner, uint256 agreementId, uint256 token);"
+                ]
+              },
+              "handler": "handleAgreementRewards",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "rewardsDistributor",
+          "address": "0x18AEC6c407235d446E52Aa243CD1A75421bb264e"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "RunnerWeightApplied(address indexed runner, uint256 weight)"
+                ]
+              },
+              "handler": "handleRunnerWeightApplied",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "SettledEraUpdated(address indexed runner, uint256 era)"
+                ]
+              },
+              "handler": "handleSettledEraUpdated",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "rewardsStaking",
+          "address": "0x1c285c5513f2135f8AD12A930E6473dA47581BE8"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "PurchaseOfferCreated(address consumer, uint256 offerId, bytes32 deploymentId, uint256 planTemplateId, uint256 deposit, uint16 limit, uint256 minimumAcceptHeight, uint256 minimumStakingAmount, uint256 expireDate)"
+                ]
+              },
+              "handler": "handlePurchaseOfferCreated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "PurchaseOfferCancelled(address indexed creator, uint256 offerId, uint256 penalty)"
+                ]
+              },
+              "handler": "handlePurchaseOfferCancelled",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "OfferAccepted(address indexed indexer, uint256 offerId, uint256 agreementId)"
+                ]
+              },
+              "handler": "handlePurchaseOfferAccepted",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "purchaseOfferMarket",
+          "address": "0x72E7333bEdf33dc70021519457f05B096e971f37"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "ChannelOpen(uint256 indexed channelId, address indexer, address consumer, uint256 total, uint256 price, uint256 expiredAt, bytes32 deploymentId, bytes callback)"
+                ]
+              },
+              "handler": "handleChannelOpen",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ChannelExtend(uint256 channelId, uint256 expiredAt, uint256 price)"
+                ]
+              },
+              "handler": "handleChannelExtend",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ChannelFund(uint256 indexed channelId, uint256 realTotal, uint256 total)"
+                ]
+              },
+              "handler": "handleChannelFund",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ChannelCheckpoint(uint256 indexed channelId, uint256 spent, bool isFinal)"
+                ]
+              },
+              "handler": "handleChannelCheckpoint",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ChannelTerminate(uint256 channelId, uint256 spent, uint256 terminatedAt, bool terminateByIndexer)"
+                ]
+              },
+              "handler": "handleChannelTerminate",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ChannelFinalize(uint256 channelId, uint256 total, uint256 remain)"
+                ]
+              },
+              "handler": "handleChannelFinalize",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "stateChannel",
+          "address": "0x6797Df373589dF2AA37FA353c4254FD7834B751A"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "ChannelLabor2(uint256 indexed channelId, bytes32 deploymentId, address indexer, uint256 amount)"
+                ]
+              },
+              "handler": "handlerChannelLabor2",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "stateChannel",
+          "address": "0x6797Df373589dF2AA37FA353c4254FD7834B751A"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "DisputeOpen(uint256 indexed disputeId, address fisherman, address indexer, uint8 _type)"
+                ]
+              },
+              "handler": "handleDisputeOpen",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "DisputeFinalized(uint256 indexed disputeId, uint8 state, uint256 slashAmount, uint256 returnAmount)"
+                ]
+              },
+              "handler": "handleDisputeFinalized",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "disputeManager",
+          "address": "0xd82a8f11645f6FEF2b863CEe19755bA22decD42a"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "PricePosted(address assetFrom, address assetTo, uint256 previousPrice, uint256 newPrice);"
+                ]
+              },
+              "handler": "handlePricePosted",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "priceOracle",
+          "address": "0x240f0aCDf5C7c9cD4AE70E1aF61fba9547DF2139"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "ControllerAdded(address indexed consumer, address controller)"
+                ]
+              },
+              "handler": "handleConsumerControllerAdded",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "ControllerRemoved(address indexed consumer, address controller)"
+                ]
+              },
+              "handler": "handleConsumerControllerRemoved",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "consumerRegistry",
+          "address": "0xd1ce436a883206a87c7e695f0d88B3b57369C477"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "DeploymentBoosterAdded(bytes32 indexed deploymentId, address indexed account, uint256 amount)"
+                ]
+              },
+              "handler": "handleDeploymentBoosterAdded",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "DeploymentBoosterRemoved(bytes32 indexed deploymentId, address indexed account, uint256 amount)"
+                ]
+              },
+              "handler": "handleDeploymentBoosterRemoved",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "MissedLabor(bytes32 indexed deploymentId, address indexed runner, uint256 labor)"
+                ]
+              },
+              "handler": "handleMissedLabor",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "AllocationRewardsGiven(bytes32 indexed deploymentId, address indexed runner, uint256 amount)"
+                ]
+              },
+              "handler": "handleAllocationRewardsGiven",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "AllocationRewardsBurnt(bytes32 indexed deploymentId, address indexed runner, uint256 amount)"
+                ]
+              },
+              "handler": "handleAllocationRewardsBurnt",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "QueryRewardsSpent(bytes32 indexed deploymentId, address indexed runner, uint256 amount, bytes data)"
+                ]
+              },
+              "handler": "handleQueryRewardsSpent",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "QueryRewardsRefunded(bytes32 indexed deploymentId, address indexed runner, uint256 amount, bytes data)"
+                ]
+              },
+              "handler": "handleQueryRewardsRefunded",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "rewardsBooster",
+          "address": "0x7F138D57A5e05b6FBF3bCAdDa9a1252354245464"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "StakeAllocationAdded(bytes32 deploymentId, address runner, uint256 amount)"
+                ]
+              },
+              "handler": "handleStakeAllocationAdded",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "StakeAllocationRemoved(bytes32 deploymentId, address runner, uint256 amount)"
+                ]
+              },
+              "handler": "handleStakeAllocationRemoved",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "OverAllocationStarted(address runner, uint256 start)"
+                ]
+              },
+              "handler": "handleOverAllocationStarted",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "OverAllocationEnded(address runner, uint256 end, uint256 time)"
+                ]
+              },
+              "handler": "handleOverAllocationEnded",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "stakingAllocation",
+          "address": "0x20E4B978b930ce17a499C33BbF958b5b920F70E1"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "RoundCreated(uint256 indexed roundId, address tokenAddress, uint256 roundStartTime, uint256 roundDeadline)"
+                ]
+              },
+              "handler": "handleRoundCreated",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "AddAirdrop(address indexed addr, uint256 roundId, uint256 amount)"
+                ]
+              },
+              "handler": "handleAddAirdrop",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "AirdropClaimed(address indexed addr, uint256 roundId, uint256 amount)"
+                ]
+              },
+              "handler": "handleAirdropClaimed",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "RoundSettled(uint256 indexed roundId, address settleDestination, uint256 unclaimAmount)"
+                ]
+              },
+              "handler": "handleRoundSettled",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Parameter(string name, bytes value)"
+                ]
+              },
+              "handler": "handleParameterEvent",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "airdropper",
+          "address": "0x8611F6647C57339b994aE5C1BB7cD8b101eB4716"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "Burn(address indexed _account, uint256 _amount)"
+                ]
+              },
+              "handler": "handleBurn",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "l2SQToken",
+          "address": "0x858c50C3AF1913b0E849aFDB74617388a1a5340d"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "Voted(address indexed user, bytes32 indexed projectId, uint256 amount)"
+                ]
+              },
+              "handler": "handleVoted",
+              "kind": "ethereum/LogHandler"
+            },
+            {
+              "filter": {
+                "topics": [
+                  "Withdrawn(address indexed user, bytes32 indexed projectId, uint256 amount)"
+                ]
+              },
+              "handler": "handleWithdrawn",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "subnetProjectVote",
+          "address": "0x117fB7631b269efefd4c6b2393a8b24B7939CB82"
+        },
+        "startBlock": 10512216
+      },
+      {
+        "endBlock": 12750283,
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "modulo": 1
+              },
+              "handler": "handleBlock_12750283",
+              "kind": "ethereum/BlockHandler"
+            }
+          ]
+        },
+        "startBlock": 12750283
+      },
+      {
+        "assets": {
+          "airdropper": {
+            "file": "ipfs://QmZyDFSKV1BCJswUg93AgsjSJAAUQAEDjYbb5FcT4p8z5c"
+          },
+          "consumerRegistry": {
+            "file": "ipfs://Qmei63fr1SFm8zRJCR6K7YbUTxRUcp91ePbWNVDSHE2Dce"
+          },
+          "disputeManager": {
+            "file": "ipfs://QmaL7E5kjGLDgn1oV7yaZXLJKxVrMHKfxuj3VV6y9YsMyt"
+          },
+          "eraManager": {
+            "file": "ipfs://Qme3mycEyfD4H7C2SJgT3zQYgX9ZaaDdb9CAY5gwdCq8mL"
+          },
+          "indexerRegistry": {
+            "file": "ipfs://QmRFHFYqT262y3qcyrD9nEbQ2BNvfmJ5AAFekBxgYRJAHB"
+          },
+          "l2SQToken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "planManager": {
+            "file": "ipfs://QmXV7FThTCY3QK3AohTCZdaToyqWzQ6aH3ynmrK6o8wvjD"
+          },
+          "priceOracle": {
+            "file": "ipfs://QmXiEGjGUFNsX3h7pfkRZAoRRCayy2V9cy1zyiXnYj35uH"
+          },
+          "projectRegistry": {
+            "file": "ipfs://QmYUFTSZHMxVKHdbb43dU4di4bLarTnYQXB2DpBzXq4BZ7"
+          },
+          "purchaseOfferMarket": {
+            "file": "ipfs://QmbxKwu9JEt5dKKwwdsm37pfme3bQkWJ2dKevoMPU4hncM"
+          },
+          "rewardsBooster": {
+            "file": "ipfs://QmQbV9jmHc9ntKa4hdRwXSJYNuiRX236t9TMLJJieB5w7D"
+          },
+          "rewardsDistributor": {
+            "file": "ipfs://QmWmXRWV2YeCnSgPxByVysDiNmJ7rfB6QB1Y9gzFELKygj"
+          },
+          "rewardsPool": {
+            "file": "ipfs://QmSWnYFBZwa4kPYLtn9RiV2PisJPDhv8qK1VTGiEJ113jw"
+          },
+          "rewardsStaking": {
+            "file": "ipfs://QmSbZ6eHWE9GvaVxNQCLRkevhMNDJ7Hq6YqXvQJv4GnPMC"
+          },
+          "serviceAgreementRegistry": {
+            "file": "ipfs://QmZb5UsTvQ1toqUpLyNeLxbJZq7T91yoWrsFEnMzPyYySQ"
+          },
+          "sqtoken": {
+            "file": "ipfs://QmX12QfMWUdhLQJJoL98ijE3rkfez6HtUxXLaw5Ca4Xo5v"
+          },
+          "staking": {
+            "file": "ipfs://QmbGjZLgcN6EGZkYNPdamuaJTQ9H8Q73LtzyMpcYATGuuN"
+          },
+          "stakingAllocation": {
+            "file": "ipfs://QmXPki9udL7AbPxzCDFBRvH7tT2Bvd8LouuF6U44UiUNQz"
+          },
+          "stateChannel": {
+            "file": "ipfs://QmRwN4QiSoguBXckCPTcEHrTaNBBQ3fpKsLAAyfCmTdEAP"
+          },
+          "subnetProjectVote": {
+            "file": "ipfs://QmYWW1L95b2Gt6xa75ck8dmxJMg594JNzyeBc6atjY7ZVf"
+          },
+          "tokenExchange": {
+            "file": "ipfs://QmSaM5sHjDgEDsERi1iocadoWGUuRhYpUGg243ehcPSQKk"
+          }
+        },
+        "kind": "ethereum/Runtime",
+        "mapping": {
+          "file": "ipfs://QmaQMDhKf1jC2RY7t9X1x7Chjq7cAauUwU1W2bU49HaamV",
+          "handlers": [
+            {
+              "filter": {
+                "topics": [
+                  "Collect(bytes32 deploymentId, address runner, uint256 era, uint256 amount)"
+                ]
+              },
+              "handler": "handleRewardsPoolCollect",
+              "kind": "ethereum/LogHandler"
+            }
+          ]
+        },
+        "options": {
+          "abi": "rewardsPool",
+          "address": "0xd2b00e427e3FE06Be815C20039421308f0487d03"
+        },
+        "startBlock": 10512216
+      }
+    ],
+    "network": {
+      "chainId": "8453"
+    },
+    "runner": {
+      "node": {
+        "name": "@subql/node-ethereum",
+        "options": {
+          "unfinalizedBlocks": true
+        },
+        "version": ">= 5.2.0"
+      },
+      "query": {
+        "name": "@subql/query",
+        "version": ">= 2.10.0"
+      }
+    },
+    "schema": {
+      "file": "ipfs://QmbB55WJHgxRERkJg2hcAVMfvDSVJypuEKsFCitG3TGLSr"
+    },
+    "specVersion": "1.0.0"
+  },
+  "domain_name": "SubQuery Network Indexing (Chain 8453)",
+  "domain_capabilities": [
+    "Query Project, Deployment and PlanTemplate data, including relationships like deployments \u2194 project and plans \u2194 deployment",
+    "Analyze reward distribution across Eras, including IndexerReward, EraReward, EraIndexerApy and IndexerStakeWeight metrics",
+    "Track allocation and boost activities such as IndexerAllocation, IndexerAllocationSummary, DeploymentBooster, DeploymentBoosterSummary and their era\u2011based changes",
+    "Monitor delegations and stake snapshots via Delegator, Delegation, EraStake, EraStakeUpdate, EraIndexerDelegator and EraDelegatorIndexer entities",
+    "Follow service agreements, offers and state channels with ServiceAgreement, Offer, AcceptedOffer and StateChannel records",
+    "Inspect network\u2011wide totals like TotalLock, Sqtoken, TokenHolder and price updates via PriceOracle",
+    "Review governance voting on subnet projects through ProjectVote and ProjectVoteActivity",
+    "Explore airdrop campaigns and user claims using Airdrop, AirdropUser and AirdropAmount entities"
+  ],
+  "decline_message": "I'm specialized in Unknown Project data queries. I can help you with Project, Deployment, Indexer, Delegator, Era, Reward, Allocation, Boost, ServiceAgreement, Offer, StateChannel, PriceOracle, Airdrop and related SubQuery network data, but I cannot assist with topics outside of the SubQuery Network (e.g., unrelated DeFi protocols, NFT marketplaces, or general blockchain advice). Please ask me about Unknown Project data instead.",
+  "suggested_questions": [
+    "Show me the most recent DeploymentBooster transactions for a given deployment.",
+    "What are the top 5 Indexers by totalReward in the last era?",
+    "How many Delegation records were created in the past 24 hours?",
+    "Can you provide a sample GraphQL query to fetch all active ServiceAgreements for a specific deployment?",
+    "Give me the total locked stake (TotalLock) for the current era.",
+    "List all AirdropUser entries that have not yet claimed their tokens.",
+    "What is the current APY for a particular Indexer according to IndexerApySummary?",
+    "How many StateChannel contracts are currently in the OPEN status?"
+  ],
+  "authorization": null,
+  "cid_hash": "QmfUNJC1Qz8m3F67sQmxrwjuSAu4WaCR1iBdPPdzBruQ7P_00021a18"
+}

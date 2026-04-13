@@ -1,0 +1,280 @@
+import random
+from typing import Any
+import aiohttp
+import os
+import bittensor as bt
+from loguru import logger
+import hashlib
+import time
+import base64
+
+
+class BenchMark:
+    def __init__(self, wallet: bt.wallet, ipc_meta_config: dict[str, Any] = None):
+        self.wallet = wallet
+        self.pending_uploads: dict[str, list[dict]] = {}
+        self.failure_uploads: dict[int, int] = {}  # round_id -> failure count
+        
+        if ipc_meta_config is None:
+            self.ipc_meta_config = {}
+        else:
+            self.ipc_meta_config = ipc_meta_config
+        
+
+    async def add_failure(
+            self,
+            uid: int,
+            round_id: int,
+            address: str,
+            version: str,
+            failure_type: int,
+            cid_hash: str,
+            project_phase: int,
+            error_msgs: list[str]
+    ):
+        self.failure_uploads[round_id] = self.failure_uploads.get(round_id, 0) + 1
+
+        failure_data = {
+            "uid": uid,
+            "round_id": round_id,
+            "address": address,
+            "version": version,
+            "failure_type": failure_type,
+            "cid_hash": cid_hash,
+            "project_phase": project_phase,
+            "error_msgs": error_msgs,
+            "timestamp": int(time.time())
+        }
+        
+        if self.failure_uploads[round_id] >= 2:
+            await self._send_to_server("failure", [failure_data])
+            del self.failure_uploads[round_id]
+
+        keys_to_delete = [k for k in self.failure_uploads.keys() if k < round_id]
+        for k in keys_to_delete:
+            del self.failure_uploads[k]
+
+    async def upload_ema(
+            self,
+            uid: int,
+            address: str,
+            version: str,
+            round_id: int,
+            new_ema_scores: dict[str, tuple[float, str]],
+        ):
+        processed_scores = {k: list(v) for k, v in new_ema_scores.items()}
+        new_ema_scores_payload = {
+            "uid": uid,
+            "address": address,
+            "version": version,
+            "round_id": round_id,
+            "new_ema_scores": processed_scores,
+        }
+        await self._send_to_server("new_ema", [new_ema_scores_payload])
+
+    async def upload_weights(
+            self,
+            uid: int,
+            address: str,
+            version: str,
+            round_id: int,
+            raw_uids: list[int],
+            raw_weights: list[float],
+            processed_weight_uids: list[int],
+            processed_weights: list[float],
+            burn_ratio: float,
+            success: bool,
+            error_msg: str | None = None,
+        ):
+        weights_payload = {
+            "uid": uid,
+            "address": address,
+            "version": version,
+            "round_id": round_id,
+            "raw_uids": raw_uids,
+            "raw_weights": raw_weights,
+            "burn_ratio": burn_ratio,
+            "processed_weight_uids": processed_weight_uids,
+            "processed_weights": processed_weights,
+            "success": success,
+            "error_msg": error_msg,
+        }
+        await self._send_to_server("new_weights", [weights_payload])
+
+    async def upload_os_info(
+            self,
+            uid: int,
+            address: str,
+            version: str,
+            cpu_count: int,
+            projects: list[str]
+        ):
+        os_info_payload = {
+            "uid": uid,
+            "address": address,
+            "version": version,
+            "cpu_count": cpu_count,
+            "projects": projects,
+        }
+        await self._send_to_server("os_info", [os_info_payload])
+
+    async def upload(
+        self,
+        uid: int,
+        address: str,
+        version: str,
+        cid: str,
+        challenge_type: int,
+        challenge_id: str,
+        project_phase: int,
+        question: str,
+        question_generator_model_name: str,
+        ground_truth_model_name: str,
+        question_generator_metrics: dict | None,
+        score_model_name: str,
+        ground_truth: str,
+        ground_cost: float,
+        ground_truth_tools: list[dict[str, str]],
+        ground_input_tokens: int,
+        ground_input_cache_read_tokens: int,
+        ground_output_tokens: int,
+        block_height: str,
+        miners_answer: list[dict[str, any]],
+    ):
+        """
+        Upload benchmark data based on mode:
+        - 'sample': Upload randomly sampled data based on sample_rate, batched by cid_hash
+        - 'all': Upload all data immediately
+        """
+        benchmark_mode = self.ipc_meta_config.get("benchmark_mode", "sample")
+        benchmark_sample_rate = self.ipc_meta_config.get("benchmark_sample_rate", 0.5)
+        benchmark_batch_size = self.ipc_meta_config.get("benchmark_batch_size", 0)
+        benchmark_url = self.ipc_meta_config.get("benchmark_url") or os.environ.get('BOARD_SERVICE')
+
+        if not benchmark_url:
+            logger.warning("[Benchmark] No benchmark URL configured, skipping upload")
+            return
+
+        # Prepare benchmark data
+        benchmark_data = {
+            "uid": uid,
+            "address": address,
+            "version": version,
+            "cid": cid,
+            "challengeType": challenge_type,
+            "challengeId": challenge_id,
+            "projectPhase": project_phase,
+            "question": question,
+            "questionGeneratorModelName": question_generator_model_name,
+            "questionGeneratorMetrics": question_generator_metrics,
+            "groundTruthModelName": ground_truth_model_name,
+            "scoreModelName": score_model_name,
+            "groundTruth": ground_truth,
+            "groundTruthCost": ground_cost,
+            "groundTruthTools": ground_truth_tools,
+            "groundInputTokens": ground_input_tokens,
+            "groundInputCacheReadTokens": ground_input_cache_read_tokens,
+            "groundOutputTokens": ground_output_tokens,
+            "blockHeight": block_height,
+            "minersAnswer": miners_answer,
+        }
+
+        # Determine if we should add this data
+        should_upload = False
+        if benchmark_mode == "all":
+            should_upload = True
+        elif benchmark_mode == "sample":
+            should_upload = random.random() < benchmark_sample_rate
+        else:
+            return
+
+        logger.debug(f"[Benchmark] Prepared benchmark data {benchmark_data}. {should_upload}")
+
+        if should_upload:
+            # Add to pending uploads for this cid
+            if cid not in self.pending_uploads:
+                self.pending_uploads[cid] = []
+            
+            self.pending_uploads[cid].append(benchmark_data)
+            
+            # Check if batch size reached for this cid
+            if len(self.pending_uploads[cid]) >= benchmark_batch_size:
+                await self._flush_cid(cid)
+
+    async def _flush_cid(self, cid: str):
+        """Flush pending uploads for a specific cid"""
+        if cid not in self.pending_uploads or not self.pending_uploads[cid]:
+            return
+
+        batch = self.pending_uploads[cid]
+        self.pending_uploads[cid] = []
+        normalized_batch = self._normalize_numbers(batch)
+        await self._send_to_server("challenge", normalized_batch)
+
+    def _normalize_numbers(self, obj):
+        """
+        Recursively normalize numbers to ensure consistency between Python and TypeScript:
+        - Convert float that are actually integers (e.g., 0.0, 1.0) to int
+        - This ensures JSON serialization matches between Python and TypeScript
+        """
+        if isinstance(obj, dict):
+            return {key: self._normalize_numbers(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._normalize_numbers(item) for item in obj]
+        elif isinstance(obj, float):
+            # If the float is actually an integer, convert it
+            if obj.is_integer():
+                return int(obj)
+            return obj
+        else:
+            return obj
+
+    async def _send_to_server(self, typ: str, data_batch: list[dict]):
+        """Send batch data to benchmark server"""
+        try:
+            # Step 1: Add timestamp and normalize data
+            timestamp = int(time.time())
+
+            payload_to_hash = {
+                "data": data_batch,
+                "timestamp": timestamp,
+            }
+
+            import msgpack
+
+            b = msgpack.packb(
+                payload_to_hash,
+                use_bin_type=True,
+                strict_types=True
+            )
+            h = hashlib.sha256(b).hexdigest()
+
+            # Convert msgpack data to base64
+            b_base64 = base64.b64encode(b).decode('utf-8')
+
+            # Step 2: Sign the hash with wallet
+            signature = f"0x{self.wallet.hotkey.sign(h).hex()}"
+            
+            # Step 3: Send hash, signature, timestamp along with data
+            payload = {
+                "msgpack": b_base64,
+                "typ": typ,
+                "hash": h,
+                "validator": self.wallet.hotkey.ss58_address,
+                "signature": signature
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.ipc_meta_config.get("benchmark_url") or f"{os.environ.get('BOARD_SERVICE')}/benchmark/msgpack",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        logger.debug(f"[Benchmark] Successfully uploaded {typ} {len(data_batch)} benchmark(s)")
+                    else:
+                        error_text = await resp.text()
+                        logger.error(f"[Benchmark] Upload {typ} failed with status {resp.status}: {error_text}")
+        except Exception as e:
+            logger.error(f"[Benchmark] Failed to upload {typ} benchmark data: {e}")
+
