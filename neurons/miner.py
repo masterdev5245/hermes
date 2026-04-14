@@ -354,7 +354,11 @@ class Miner(BaseNeuron):
     ) -> SyntheticNonStreamSynapse | OrganicNonStreamSynapse:
         question = task.get_question()
         cid_hash = task.cid_hash
+            # 👈 ADD THESE TIMING LINES:
+        t0 = time.perf_counter()
         graph, graphql_agent = self.agent_manager.get_miner_agent(cid_hash)
+        t1 = time.perf_counter()
+        log.info(f"[TIMING] Agent load: {t1-t0:.2f}s for {cid_hash}")
 
         # ---- SYNTHETIC (Validator) path: fastest! ----
         if isinstance(task, SyntheticNonStreamSynapse):
@@ -402,7 +406,12 @@ class Miner(BaseNeuron):
                 error = f"No agent found for project {cid_hash}"
                 status_code = ErrorCode.AGENT_NOT_FOUND
             else:
+
+                t2 = time.perf_counter()
+                log.info(f"[TIMING] Before ainvoke: {t2-t1:.2f}s")
                 r = await graph.ainvoke({"messages": messages, "block_height": task.block_height})
+                t3 = time.perf_counter()
+                log.info(f"[TIMING] ainvoke took: {t3-t2:.2f}s")
                 (
                     answer,
                     usage_info,
