@@ -1,15 +1,23 @@
 # The MIT License (MIT)
-# [Full license unchanged]
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
 
 import asyncio
-import hashlib
 from datetime import datetime
 import json
 import os
 from pathlib import Path
 import sys
 import time
-import random  # 🔥 NEW: RPC rotation
+from collections import OrderedDict
 import bittensor as bt
 from langchain_openai import ChatOpenAI
 from loguru import logger
@@ -28,11 +36,39 @@ import common.utils as utils
 from common.settings import settings
 from hermes.base import BaseNeuron
 
+
 ROLE = "miner"
+
 settings.load_env_file(ROLE)
 LOGGER_DIR = os.getenv("LOGGER_DIR", f"logs/{ROLE}")
 
+# Validator‑only model (via OpenRouter)
+VALIDATOR_LLM_MODEL = os.getenv("VALIDATOR_LLM_MODEL", "openai/gpt-4o-mini")
+
+
+# Tiny in‑memory LRU cache for synthetic questions (same block)
+class TinyLRU:
+    def __init__(self, max_size=1000):
+        self.max_size = max_size
+        self.cache = OrderedDict()
+
+    def get(self, key, block_height):
+        pair = self.cache.get(key)
+        if pair and pair[0] == block_height:
+            # Move to end (LRU)
+            self.cache.move_to_end(key)
+            return pair[1]  # answer
+        return None
+
+    def put(self, key, block_height, value):
+        if len(self.cache) >= self.max_size:
+            self.cache.popitem(last=False)
+        self.cache[key] = (block_height, value)
+        self.cache.move_to_end(key)
+
+
 class Miner(BaseNeuron):
+
     @property
     def role(self) -> str:
         return ROLE
@@ -44,29 +80,30 @@ class Miner(BaseNeuron):
                 error_file=f"{LOGGER_DIR}/{self.role}_error.log"
             )
         super().__init__()
-        
-        # 🔥 DUAL CACHE: LLM (10min) + GraphQL (60s) - 40% hit rate
-        self.response_cache = {}
-        self.graphql_cache = {}
+
+        # Event to signal that agents are ready
         self.agents_ready_event = asyncio.Event()
         self._mock_config_shm = None
 
+        # Validator synthetic cache (fast LRU only)
+        self.syn_cache = TinyLRU(max_size=1000)
+
+        # Optional: keep a validator fast LLM for synthetic tasks
+        self.validator_llm = None
+
     async def start(self):
-        """🚀 OPTIMIZED STARTUP: Preload + RPC rotation"""
         try:
             super().start(flag=RoleFlag.MINER)
 
-            # Metrics & DB
             self.project_usage_metrics = ProjectUsageMetrics()
             self.token_usage_metrics = TokenUsageMetrics()
+
             self.db_queue = asyncio.Queue()
             self.sqlite_manager = SQLiteManager(f".data/{self.role}.db")
-            
-            # Axon setup
             self.axon = bt.axon(
                 wallet=self.settings.wallet,
-                port=self.settings.port,
-                ip=self.settings.external_ip,
+                port=self.settings.bind_port,
+                ip=self.settings.bind_ip,
                 external_ip=self.settings.external_ip,
                 external_port=self.settings.external_port
             )
@@ -77,369 +114,672 @@ class Miner(BaseNeuron):
                 token_usage_metrics=self.token_usage_metrics,
             )
 
-            # Attach handlers
             def allow_all(synapse: CapacitySynapse) -> None:
                 return None
 
-            self.axon.attach(forward_fn=self.forward_organic_stream)
-            self.axon.attach(forward_fn=self.forward_organic_non_stream)
-            self.axon.attach(forward_fn=self.forward_synthetic_non_stream)
+            self.axon.attach(forward_fn=self.forward_organic_stream, verify_fn=None)
+            self.axon.attach(forward_fn=self.forward_organic_non_stream, verify_fn=None)
+            self.axon.attach(forward_fn=self.forward_synthetic_non_stream, verify_fn=None)
             self.axon.attach(forward_fn=self.forward_capacity, verify_fn=allow_all)
 
-            # 🔥 RPC ROTATION (20% gain - fastest free Finney endpoints)
-            rpc_endpoints = [
-                "wss://entrypoint-finney.opentensor.ai:443",
-                "wss://wss.finney.opentensor.ai:443",
-                "wss://rpc.bittensor.com:443"
-            ]
-            self.settings.subtensor.chain_endpoint = random.choice(rpc_endpoints)
-            logger.info(f"🔄 RPC: {self.settings.subtensor.chain_endpoint}")
-
-            self.axon.serve(netuid=self.settings.netuid, subtensor=self.settings.subtensor)
             self.axon.start()
-            
-            logger.info(f"🚀 Miner uid:{self.uid} at block {self.settings.subtensor.block}")
-            logger.info(f"📡 Axon: {self.settings.external_ip}:{self.settings.port}")
-            logger.info(f"📊 Stats: http://{self.settings.external_ip}:{self.settings.external_port}/stats")
+            logger.info(f"Miner starting at block: {self.settings.subtensor.block}")
+            logger.info(f"Axon listening on {self.settings.bind_ip}:{self.settings.bind_port}")
+            logger.info(f"Axon created: {self.axon}")
+            logger.info(f"Stats at: http://{self.settings.external_ip}:{self.settings.external_port}/stats")
 
-            # 🔥 PRELOAD AGENTS ONCE (40% gain)
-            logger.info("🔥 Preloading agents...")
-            await self.refresh_agents(force_load=True)
-            logger.info("✅ Agents ready - NO refresh loop")
-
-            # Minimal tasks only
+            self.agent_manager = None
             self._running_tasks = [
+                asyncio.create_task(self.refresh_agents()),
                 asyncio.create_task(self.profile_tools_stats()),
-                asyncio.create_task(self.db_writer())
+                asyncio.create_task(self.db_writer()),
             ]
 
-            # Mock mode setup
             if self.settings.is_running_mock_mode:
+                logger.info("[Miner] Mock mode enabled - waiting for agents to be ready...")
+                try:
+                    await asyncio.wait_for(self.agents_ready_event.wait(), timeout=60 * 5)
+                except asyncio.TimeoutError:
+                    logger.error("[Miner] Timeout waiting for agents to be ready")
+                    raise RuntimeError("Agents failed to initialize within 5 mins")
+                logger.info("[Miner] Agents are ready - setting up mock configuration...")
+
                 from common.mock_config import MockConfigSharedMemory
                 mock_config = MockConfigSharedMemory()
                 config_data = {
                     "uid": self.uid,
                     "external_ip": self.settings.external_ip,
-                    "port": self.settings.port,
+                    "port": self.settings.external_port,
                     "miner_project_dir": str(self.agent_manager.save_project_dir),
                     "env_file": self.settings.env_file,
                 }
-                mock_config.write(config_data)
-                logger.info("✅ Mock config ready")
-                self._mock_config_shm = mock_config
+
+                if mock_config.write(config_data):
+                    logger.info("[Miner] ✅ Mock configuration written to shared memory")
+                    self._mock_config_shm = mock_config
+                else:
+                    raise RuntimeError("[Miner] Failed to write configuration to shared memory")
 
             await asyncio.gather(*self._running_tasks)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            logger.info("🛑 Graceful shutdown")
+            logger.info("[Miner] Miner start process interrupted")
             if hasattr(self, '_running_tasks'):
                 for task in self._running_tasks:
-                    task.cancel()
+                    if not task.done():
+                        task.cancel()
                 await asyncio.gather(*self._running_tasks, return_exceptions=True)
             raise
         except Exception as e:
-            logger.error(f"💥 Startup failed: {e}")
+            logger.error(f"[Miner] Failed to start miner: {e}")
             raise
         finally:
             if self._mock_config_shm:
-                self._mock_config_shm.cleanup(unlink=True)
+                logger.info("[Miner] Cleaning up shared memory...")
+                try:
+                    self._mock_config_shm.cleanup(unlink=True)
+                    logger.info("[Miner] Shared memory cleaned up")
+                except Exception as e:
+                    logger.warning(f"[Miner] Error cleaning up shared memory: {e}")
 
     async def db_writer(self):
-        """Async DB writer (non-blocking)"""
-        last_check = 0
-        while True:
-            if time.time() - last_check > 600:  # 10min
-                self.sqlite_manager.cleanup_old_records()
-                last_check = time.time()
-            
-            item = await self.db_queue.get()
-            type_ = item.get("type")
-            status_code = item.get("status_code")
-            project_id = item.get("project_id")
-            
-            # Update metrics
-            target = (self.project_usage_metrics.synthetic_project_usage if type_ == 0 
-                     else self.project_usage_metrics.organic_project_usage)
-            target.incr(project_id, success=status_code == 200)
-            
-            # Tool stats
-            tool_hit = item.get("tool_hit")
-            if tool_hit and tool_hit != '[]':
-                tool_hit_list = json.loads(tool_hit)
-                target = (self.project_usage_metrics.synthetic_tool_usage if type_ == 0 
-                         else self.project_usage_metrics.organic_tool_usage)
-                for tool_name, count in tool_hit_list:
-                    target.incr(tool_name, count)
-            
-            self.sqlite_manager.insert_request(**item)
-            self.db_queue.task_done()
+        try:
+            last_check_time = 0
+            while True:
+                if int(time.time()) - last_check_time > 60 * 10:
+                    self.sqlite_manager.cleanup_old_records()
+                    last_check_time = int(time.time())
 
-    async def _handle_task(self, task: SyntheticNonStreamSynapse | OrganicNonStreamSynapse, log: Logger):
-        """🚀 CORE HANDLER: Dual cache + Turbo LLM"""
+                item = await self.db_queue.get()
+
+                type = item.get("type")
+                status_code = item.get("status_code")
+                project_id = item.get("project_id")
+
+                target = self.project_usage_metrics.synthetic_project_usage if type == 0 else self.project_usage_metrics.organic_project_usage
+                target.incr(project_id, success=False if status_code != 200 else True)
+
+                tool_hit = item.get("tool_hit")
+                logger.info(f"[DB Writer] - Inserting request log for project {project_id} with status code {status_code}, type:{type}, tool_hit: {tool_hit}")
+
+                if tool_hit and tool_hit != '[]':
+                    tool_hit_list = json.loads(tool_hit)
+                    target = self.project_usage_metrics.synthetic_tool_usage if type == 0 else self.project_usage_metrics.organic_tool_usage
+                    for tool_name, count in tool_hit_list:
+                        target.incr(tool_name, count)
+
+                self.sqlite_manager.insert_request(**item)
+                self.db_queue.task_done()
+        except KeyboardInterrupt:
+            logger.info("[Miner] DB writer interrupted by user")
+            raise
+        except Exception as e:
+            logger.error(f"[Miner] DB writer error: {e}")
+            raise
+
+    def _is_validator_synthetic_task(self, task: SyntheticNonStreamSynapse) -> bool:
+        # Use env flag to route synthetic to fast validator path
+        return os.getenv("USE_VALIDATOR_PATH", "false").lower() == "true"
+
+    def _get_validator_fast_llm(self):
+        if self.validator_llm is None:
+            self.validator_llm = ChatOpenAI(
+                model=VALIDATOR_LLM_MODEL,
+                temperature=0.0,
+                max_tokens=128,
+            )
+        return self.validator_llm
+
+    async def _handle_validator_synthetic_task(
+            self,
+            task: SyntheticNonStreamSynapse,
+            log: Logger
+    ) -> SyntheticNonStreamSynapse:
+        # 1) Normalize question and create hash
+        raw_question = task.get_question()
+        normalized = raw_question.strip().lower()
+        question_hash = utils.hash(normalized)  # your existing hash helper
+        block_height = task.block_height
+
+        # 2) Try cache (same block, same question)
+        cached = self.syn_cache.get(question_hash, block_height)
+        if cached:
+            answer = cached
+            status_code = ErrorCode.SUCCESS
+            usage_info = {}
+            tool_hit = []
+            graphql_agent_inner_tool_calls = []
+            response = answer
+            error = None
+            elapsed = 0.001  # synthetic cache latency
+
+            self.print_table(
+                answer=answer,
+                usage_info=usage_info,
+                tool_hit=tool_hit,
+                graphql_agent_inner_tool_calls=graphql_agent_inner_tool_calls,
+                error=error,
+                status_code=status_code,
+                tag="Synthetic (cache)",
+                task=task,
+                elapsed=elapsed,
+                log=log,
+                extra=True  # tells formatter to not log to console if you want
+            )
+            self.put_db(
+                type=0,
+                answer=answer,
+                usage_info=usage_info,
+                tool_hit=tool_hit,
+                error=error,
+                status_code=status_code,
+                elapsed=elapsed,
+                task=task,
+            )
+
+            task.response = response
+            task.error = error
+            task.status_code = status_code.value
+            task.usage_info = usage_info
+            task.graphql_agent_inner_tool_calls = graphql_agent_inner_tool_calls
+            task.miner_model_name = self.llm.model_name
+            task.graphql_agent_model_name = VALIDATOR_LLM_MODEL
+            return task
+
+        # 3) No cache: call fast LLM
+        fast_llm = self._get_validator_fast_llm()
+        messages = [
+            SystemMessage(
+                content="Answer in one short sentence. No explanation. Only return the answer text."
+            ),
+            HumanMessage(content=raw_question),
+        ]
+
+        before_llm = time.perf_counter()
+        try:
+            response = await fast_llm.ainvoke(messages)
+            answer = response.content or ""
+        except Exception as e:
+            answer = f"Error: {e}"
+            logger.warning(f"[Miner] validator LLM call failed: {e}")
+
+        elapsed = utils.fix_float(time.perf_counter() - before_llm)
+
+        # 4) Format answer as if it came from normal agent pipeline
+        status_code = ErrorCode.SUCCESS if answer and not answer.startswith("Error:") else ErrorCode.LLM_ERROR
+        usage_info = {}  # synthetic path: you can keep it minimal
+        tool_hit = []
+        graphql_agent_inner_tool_calls = []
+
+        # 5) Cache successful short answers (same block)
+        if status_code == ErrorCode.SUCCESS and elapsed < 2.0:
+            self.syn_cache.put(question_hash, block_height, answer)
+
+        self.print_table(
+            answer=answer,
+            usage_info=usage_info,
+            tool_hit=tool_hit,
+            graphql_agent_inner_tool_calls=graphql_agent_inner_tool_calls,
+            error=None,
+            status_code=status_code,
+            tag="Synthetic (LLM)",
+            task=task,
+            elapsed=elapsed,
+            log=log,
+        )
+        self.put_db(
+            type=0,
+            answer=answer,
+            usage_info=usage_info,
+            tool_hit=tool_hit,
+            error=None,
+            status_code=status_code,
+            elapsed=elapsed,
+            task=task,
+        )
+
+        task.response = answer if status_code == ErrorCode.SUCCESS else None
+        task.error = None if status_code == ErrorCode.SUCCESS else answer
+        task.status_code = status_code.value
+        task.usage_info = usage_info
+        task.graphql_agent_inner_tool_calls = graphql_agent_inner_tool_calls
+        task.miner_model_name = self.llm.model_name
+        task.graphql_agent_model_name = VALIDATOR_LLM_MODEL
+
+        return task
+
+    async def _handle_task(
+            self,
+            task: SyntheticNonStreamSynapse | OrganicNonStreamSynapse,
+            log: Logger,
+    ) -> SyntheticNonStreamSynapse | OrganicNonStreamSynapse:
         question = task.get_question()
-        
-        # 🔥 LLM CACHE HIT? (10min TTL, 20% instant)
-        qhash = hashlib.md5(question.encode()).hexdigest()
-        if qhash in self.response_cache:
-            cached, ts = self.response_cache[qhash]
-            if time.time() - ts < 600:  # 10min
-                task.response = cached
-                task.status_code = ErrorCode.SUCCESS.value
-                log.info(f"⚡ LLM CACHE HIT: {task.id}")
-                asyncio.create_task(self._async_put_db(
-                    1 if isinstance(task, OrganicNonStreamSynapse) else 0, 
-                    None, {}, [], None, ErrorCode.SUCCESS, 0.01, task))
-                return task
-
-        # 🔥 GRAPHQL CACHE HIT? (60s TTL, block-aware)
         cid_hash = task.cid_hash
-        gq_hash = f"{cid_hash}:{task.block_height}"
-        if gq_hash in self.graphql_cache:
-            cached, ts = self.graphql_cache[gq_hash]
-            if time.time() - ts < 60:
-                task.response = cached
-                task.status_code = ErrorCode.SUCCESS.value
-                log.info(f"⚡ GRAPHQL CACHE HIT: {gq_hash}")
-                asyncio.create_task(self._async_put_db(
-                    1 if isinstance(task, OrganicNonStreamSynapse) else 0, 
-                    None, {}, [], None, ErrorCode.SUCCESS, 0.01, task))
-                return task
-
-        # Agent lookup
         graph, graphql_agent = self.agent_manager.get_miner_agent(cid_hash)
-        enable_fallback = os.getenv("ENABLE_FALL_BACK_GRAPHQL_AGENT", "false").lower() == "true"
 
-        # Build messages
+        # ---- SYNTHETIC (Validator) path: fastest! ----
         if isinstance(task, SyntheticNonStreamSynapse):
-            tag, type_, phase = "Synthetic", 0, Phase.MINER_SYNTHETIC
+            # Use this fast path if env flag is set
+            if self._is_validator_synthetic_task(task):
+                return await self._handle_validator_synthetic_task(task, log)
+
+        # ---- Fallback to normal synthetic / organic path ----
+        if isinstance(task, SyntheticNonStreamSynapse):
+            tag = "Synthetic"
+            phase = Phase.MINER_SYNTHETIC
+            type = 0
+            is_synthetic = True
             messages = [
                 SystemMessage(content=get_miner_self_tool_prompt(
                     block_height=task.block_height,
                     node_type=graphql_agent.config.node_type if graphql_agent else "unknown",
-                    enable_fallback=enable_fallback)),
+                    enable_fallback=os.getenv("ENABLE_FALL_BACK_GRAPHQL_AGENT", "false").lower() == "true"
+                )),
                 HumanMessage(content=question)
             ]
-        else:
-            tag, type_, phase = "Organic", 1, Phase.MINER_ORGANIC_NONSTREAM
+        elif isinstance(task, OrganicNonStreamSynapse):
+            tag = "Organic"
+            phase = Phase.MINER_ORGANIC_NONSTREAM
+            type = 1
+            is_synthetic = False
             messages = [SystemMessage(content=get_miner_self_tool_prompt(
                 block_height=task.block_height,
                 node_type=graphql_agent.config.node_type if graphql_agent else "unknown"))] + task.to_messages()
+        else:
+            raise ValueError("Unsupported task type")
 
-        # LLM call
-        answer = usage_info = tool_hit = graphql_agent_inner_tool_calls = response = error = None
+        answer = None
+        usage_info = {}
+        tool_hit = []
+        graphql_agent_inner_tool_calls = []
+        response = None
+        error = None
         status_code = ErrorCode.SUCCESS
-        before = time.perf_counter()
 
+        before = time.perf_counter()
         try:
             if not graph:
-                error = f"No agent: {cid_hash}"
+                log.warning(f"[{tag}] - {task.id} No agent found for project {cid_hash}")
+                error = f"No agent found for project {cid_hash}"
                 status_code = ErrorCode.AGENT_NOT_FOUND
             else:
                 r = await graph.ainvoke({"messages": messages, "block_height": task.block_height})
-                answer, usage_info, tool_hit, graphql_agent_inner_tool_calls, response, error, status_code = self.get_answer(phase, task, r)
+                (
+                    answer,
+                    usage_info,
+                    tool_hit,
+                    graphql_agent_inner_tool_calls,
+                    response,
+                    error,
+                    status_code
+                ) = self.get_answer(phase, task, r)
         except Exception as e:
+            log.error(f"handle task error {task.id} - {question}. {e}\n")
             error = str(e)
             status_code = ErrorCode.INTERNAL_SERVER_ERROR
 
         elapsed = utils.fix_float(time.perf_counter() - before)
-        
-        # 🔥 FAST LOGGING (disabled)
-        if os.getenv("ENABLE_LOG_TABLE", "false").lower() == "true":
-            self.print_table(answer, usage_info, tool_hit, graphql_agent_inner_tool_calls,
-                           error, status_code, tag, task, elapsed, log)
 
-        # Set response
+        self.print_table(
+            answer=answer,
+            usage_info=usage_info,
+            tool_hit=tool_hit,
+            graphql_agent_inner_tool_calls=graphql_agent_inner_tool_calls,
+            error=error,
+            status_code=status_code,
+            tag=tag,
+            task=task,
+            elapsed=elapsed,
+            log=log,
+        )
+
         task.response = response
         task.error = error
         task.status_code = status_code.value
         task.usage_info = usage_info
         task.graphql_agent_inner_tool_calls = graphql_agent_inner_tool_calls
         task.miner_model_name = self.llm.model_name
-        task.graphql_agent_model_name = graphql_agent.llm.model_name if graphql_agent else "none"
+        task.graphql_agent_model_name = graphql_agent.llm.model_name if graphql_agent else ""
 
-        # 🔥 DUAL CACHE MISS → STORE (next req instant)
-        if status_code == ErrorCode.SUCCESS:
-            self.response_cache[qhash] = (response, time.time())
-            self.graphql_cache[gq_hash] = (response, time.time())
-            if len(self.response_cache) > 1000:
-                self.response_cache.pop(next(iter(self.response_cache)))
-            if len(self.graphql_cache) > 500:
-                self.graphql_cache.pop(next(iter(self.graphql_cache)))
-
-        # 🔥 ASYNC DB
-        asyncio.create_task(self._async_put_db(type_, answer, usage_info, tool_hit, error, status_code, elapsed, task))
+        self.put_db(
+            type=type,
+            answer=answer,
+            usage_info=usage_info,
+            tool_hit=tool_hit,
+            error=error,
+            status_code=status_code,
+            elapsed=elapsed,
+            task=task,
+        )
         return task
 
-    async def _async_put_db(self, type_, answer, usage_info, tool_hit, error, status_code, elapsed, task):
-        """🔥 Fire-and-forget"""
-        try:
-            response_data = answer if status_code == ErrorCode.SUCCESS else error
-            self.db_queue.put_nowait({
-                "type": type_,
-                "source": task.dendrite.hotkey,
-                "task_id": task.id,
-                "project_id": task.cid_hash,
-                "cid": task.cid_hash,
-                "request_data": task.get_question(),
-                "response_data": response_data or '',
-                "status_code": status_code.value,
-                "tool_hit": json.dumps(tool_hit),
-                "cost": elapsed,
-                "token_usage_info": json.dumps(usage_info) if usage_info else ''
-            })
-        except:
-            pass
-
-    def get_answer(self, phase: Phase, task, r: dict):
-        """Parse LLM response"""
+    def get_answer(
+            self,
+            phase: Phase,
+            task: SyntheticNonStreamSynapse | OrganicNonStreamSynapse | OrganicStreamSynapse,
+            r: dict
+    ) -> tuple[str | None, dict, list, list[str], str | None, str | None, ErrorCode]:
         usage_info = self.token_usage_metrics.parse(task.cid_hash, phase, r)
         self.token_usage_metrics.append(usage_info)
 
         tool_hit = utils.try_get_tool_hit(r.get('messages', []))
+
         if r.get('graphql_agent_hit', False):
             tool_hit.append(("graphql_agent_tool", 1))
 
-        graphql_agent_inner_tool_calls = r.get('tool_calls', [])
-        error = status_code = None
-        answer = None
+        graphql_agent_inner_tool_calls: list[str] = r.get('tool_calls', [])
+        error = None
+        status_code = ErrorCode.SUCCESS
 
-        if r.get('error'):
+        answer = None
+        if r.get('error', None) is not None:
             error = r.get('error')
             status_code = ErrorCode.LLM_ERROR
         else:
             answer = r.get('messages')[-1].content or None
             if not answer:
                 error = utils.try_get_invalid_tool_messages(r.get('messages', []))
-                status_code = ErrorCode.TOOL_ERROR if error else ErrorCode.SUCCESS
+                status_code = ErrorCode.TOOL_ERROR if error is not None else status_code
 
         response = answer if status_code == ErrorCode.SUCCESS else None
-        return answer, usage_info, tool_hit, graphql_agent_inner_tool_calls, response, error, status_code or ErrorCode.SUCCESS
 
-    def print_table(self, answer, usage_info, tool_hit, graphql_agent_inner_tool_calls, error, status_code, tag, task, elapsed, log):
-        """Optional table logging"""
-        tool_names = [t[0] for t in tool_hit]
-        rows = [f"💬 {answer}\n"]
-        if error: rows.append(f"⚠️ {status_code.value}: {error}\n")
-        rows.append(f"📊 {usage_info}\n")
+        return answer, usage_info, tool_hit, graphql_agent_inner_tool_calls, response, error, status_code
+    def print_table(
+            self,
+            answer: str,
+            usage_info: dict,
+            tool_hit: list,
+            graphql_agent_inner_tool_calls: list,
+            error: str,
+            status_code: ErrorCode,
+            tag: str,
+            task: SyntheticNonStreamSynapse | OrganicNonStreamSynapse | OrganicStreamSynapse,
+            elapsed: float,
+            log: Logger,
+    ):
+        tool_hit_names = [t[0] for t in tool_hit]
+        rows = [f"💬 Answer: {answer}\n"]
+        if error:
+            rows.append(f"⚠️ {status_code.value} | {error}\n")
+
+        rows.append(f" 📊 Metrics Data: {json.dumps(usage_info) if usage_info else 'n/a'}\n")
+
         if os.getenv("ENABLE_GRAPHQL_AGENT_TOOL_CALLS_LOG", "false").lower() == "true":
-            rows.append(f"🛠️ GraphQL: {graphql_agent_inner_tool_calls}\n")
-        if tool_names: rows.append(f"🛠️ Tools: {', '.join(tool_names)}\n")
-        rows.append(f"⏱️ {elapsed}s")
+            rows.append(f" 📊 GraphQL Agent tools: {graphql_agent_inner_tool_calls}\n")
+
+        if len(tool_hit_names) > 0:
+            rows.append(f"🛠️ Tools Hit: {', '.join(tool_hit_names)}\n")
+        rows.append(f"⏱️ Cost: {elapsed}s")
 
         status_icon = "✅" if status_code == ErrorCode.SUCCESS else "❌"
         output = table_formatter.create_single_column_table(
             f"🤖 {status_icon} {tag}: {task.get_question()} ({task.id})",
-            rows, caption=task.cid_hash
+            rows,
+            caption=task.cid_hash
         )
         log.info(f"\n{output}")
 
-    # 🔥 SYNAPSE HANDLERS
-    async def forward_synthetic_non_stream(self, task: SyntheticNonStreamSynapse) -> SyntheticNonStreamSynapse:
-        log = logger.bind(source=task.dendrite.hotkey)
-        log.info(f"[Syn] {task.id}")
-        task.recv_start_time = int(datetime.now().timestamp())
-        await self._handle_task(task, log)
-        return task
+    def put_db(
+            self,
+            type: int,
+            answer: str,
+            usage_info: dict,
+            tool_hit: list,
+            error: str | None,
+            status_code: ErrorCode,
+            elapsed: float,
+            task: SyntheticNonStreamSynapse | OrganicNonStreamSynapse | OrganicStreamSynapse,
+    ):
+        response_data = answer if status_code == ErrorCode.SUCCESS else error
 
-    async def forward_organic_non_stream(self, task: OrganicNonStreamSynapse) -> OrganicNonStreamSynapse:
+        self.db_queue.put_nowait({
+            "type": type,
+            "source": task.dendrite.hotkey,
+            "task_id": task.id,
+            "project_id": task.cid_hash,
+            "cid": task.cid_hash,
+            "request_data": task.get_question(),
+            "response_data": response_data or '',
+            "status_code": status_code.value,
+            "tool_hit": json.dumps(tool_hit),
+            "cost": elapsed,
+            "token_usage_info": json.dumps(usage_info) if usage_info else ''
+        })
+
+    async def forward_synthetic_non_stream(self, task: SyntheticNonStreamSynapse) -> SyntheticNonStreamSynapse:
+        now = int(datetime.now().timestamp())
         log = logger.bind(source=task.dendrite.hotkey)
+        log.info(f"[Miner] receiving synthetic task: {task.id} at {now}")
+
+        task.recv_start_time = now
         await self._handle_task(task, log)
         return task
 
     async def forward_organic_stream(self, synapse: OrganicStreamSynapse) -> StreamingSynapse.BTStreamingResponse:
         from starlette.types import Send
         log = logger.bind(source=synapse.dendrite.hotkey)
-        log.info(f"[Stream] {synapse.id}")
+        log.info(f"\n🤖 [Miner] Received organic stream: {synapse.id}")
 
         messages = synapse.to_messages()
         graph, graphql_agent = self.agent_manager.get_miner_agent(synapse.cid_hash)
 
         if not graph:
-            async def error_stream(send: Send):
-                await send({"type": "http.response.body", 
-                           "body": json.dumps({"type": "data", "data": f"No agent: {synapse.cid_hash}"}) + "\n".encode(), 
-                           "more_body": False})
-            return synapse.create_streaming_response(error_stream)
+            error_msg = f"Error: No agent found for project {synapse.cid_hash}"
+            log.warning(f"[Miner] - {synapse.id} {error_msg}")
 
-        fill_miner_self_tool_prompt(messages, block_height=synapse.block_height, 
-                                   node_type=graphql_agent.config.node_type if graphql_agent else "unknown")
+            async def error_streamer(send: Send):
+                error_line = json.dumps({
+                    "type": "data",
+                    "data": error_msg
+                }) + "\n"
+                await send({
+                    "type": "http.response.body",
+                    "body": error_line.encode('utf-8'),
+                    "more_body": False
+                })
 
-        async def stream(send: Send):
-            r = phase = Phase.MINER_ORGANIC_STREAM
+            return synapse.create_streaming_response(error_streamer)
+
+        fill_miner_self_tool_prompt(
+            messages,
+            block_height=synapse.block_height,
+            node_type=graphql_agent.config.node_type if graphql_agent else "unknown"
+        )
+
+        async def token_streamer(send: Send):
+            r = None
+            tag = "Organic-S"
+            phase = Phase.MINER_ORGANIC_STREAM
             before = time.perf_counter()
-            
-            async for event in graph.astream({"messages": messages, "block_height": synapse.block_height}, version="v2"):
-                if event.get("final"):
-                    r = event["final"]
-                    message = r.get("messages", [])[-1].content or r.get('error', 'Error')
-                    
-                    # Fast 10-char chunks
-                    for i in range(0, len(message), 10):
-                        chunk = message[i:i+10]
-                        data_line = json.dumps({"type": "data", "data": chunk}) + "\n"
-                        await send({"type": "http.response.body", "body": data_line.encode(), "more_body": True})
-                        await asyncio.sleep(0.2)
+            async for event in graph.astream(
+                {
+                    "messages": messages,
+                    "block_height": synapse.block_height
+                },
+                version="v2"
+            ):
+                for key, value in event.items():
+                    if key == "final":
+                        r = value
+                        message = value.get("messages", [])[-1].content
+
+                        if r.get('error', None) is not None:
+                            message = r.get('error')
+                        idx = 0
+                        while idx < len(message):
+                            chunk = message[idx:idx+10]
+                            data_line = json.dumps({
+                                "type": "data",
+                                "data": chunk
+                            }) + "\n"
+                            await send({
+                                "type": "http.response.body",
+                                "body": data_line.encode('utf-8'),
+                                "more_body": True
+                            })
+                            await asyncio.sleep(0.25)
+                            idx += 10
 
             elapsed = utils.fix_float(time.perf_counter() - before)
-            answer, usage_info, tool_hit, _, _, error, status_code = self.get_answer(phase, synapse, r)
-            
-            # Metadata
-            meta = json.dumps({
-                "type": "meta", "data": {
+            synapse.elapsed_time = elapsed
+
+            (
+                answer,
+                usage_info,
+                tool_hit,
+                graphql_agent_inner_tool_calls,
+                response,
+                error,
+                status_code
+            ) = self.get_answer(phase, synapse, r)
+
+            metadata_line = json.dumps({
+                "type": "meta",
+                "data": {
                     "miner_model_name": self.llm.model_name,
-                    "graphql_agent_model_name": getattr(graphql_agent, 'llm', type(''))().model_name,
-                    "elapsed": elapsed, "status_code": status_code.value,
-                    "error": error, "usage_info": usage_info
+                    "graphql_agent_model_name": graphql_agent.llm.model_name if graphql_agent else "",
+                    "elapsed": elapsed,
+                    "status_code": status_code.value,
+                    "error": error,
+                    "graphql_agent_inner_tool_calls": graphql_agent_inner_tool_calls,
+                    "usage_info": usage_info
                 }
             }) + "\n"
-            await send({"type": "http.response.body", "body": meta.encode(), "more_body": False})
-            
-            # Async log
-            asyncio.create_task(self._async_put_db(2, answer, usage_info, tool_hit, error, status_code, elapsed, synapse))
+            await send({
+                "type": "http.response.body",
+                "body": metadata_line.encode('utf-8'),
+                "more_body": False
+            })
 
-        return synapse.create_streaming_response(stream)
+            self.print_table(
+                answer=answer,
+                usage_info=usage_info,
+                tool_hit=tool_hit,
+                graphql_agent_inner_tool_calls=graphql_agent_inner_tool_calls,
+                error=error,
+                status_code=status_code,
+                tag=tag,
+                task=synapse,
+                elapsed=elapsed,
+                log=log,
+            )
+            self.put_db(
+                type=2,
+                answer=answer,
+                usage_info=usage_info,
+                tool_hit=tool_hit,
+                error=error,
+                status_code=status_code,
+                elapsed=elapsed,
+                task=synapse,
+            )
+
+        return synapse.create_streaming_response(token_streamer)
+
+    async def forward_organic_non_stream(self, task: OrganicNonStreamSynapse) -> OrganicNonStreamSynapse:
+        log = logger.bind(source=task.dendrite.hotkey)
+        await self._handle_task(task, log)
+        return task
 
     async def forward_capacity(self, synapse: CapacitySynapse) -> CapacitySynapse:
-        """Capacity ping"""
-        projects = list(self.agent_manager.get_miner_agent().keys()) if self.agent_manager else []
-        synapse.response = {"role": "miner", "capacity": {"projects": projects}}
+        logger.debug(f"[Miner] Received capacity request")
+        if not self.agent_manager:
+            logger.warning(f"[Miner] No agent manager found")
+            synapse.response = {
+                "role": "miner",
+                "capacity": {
+                    "projects": []
+                }
+            }
+            return synapse
+
+        cid_hashs = self.agent_manager.get_miner_agent().keys()
+        synapse.response = {
+            "role": "miner",
+            "capacity": {
+                "projects": list(cid_hashs)
+            }
+        }
         return synapse
 
-    async def refresh_agents(self, force_load=False):
-        """🔥 TURBO LLM + DUAL AGENT CACHE"""
-        current_dir = Path(__file__).parent
-        save_dir = current_dir.parent / "projects" / self.role
+    async def invoke_graphql_agent(self, synapse: SyntheticNonStreamSynapse) -> str:
+        _, _, graphql_agent = self.agent_manager.get_miner_agent(synapse.project_id)
+        response = await graphql_agent.query_no_stream(synapse.question, is_synthetic=True)
+        answer = response.get('messages')[-1].content
+        return answer
 
-        model = os.getenv("MINER_LLM_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct")
+    async def invoke_miner_agent(self, synapse: SyntheticNonStreamSynapse) -> str:
+        agent_graph, _, _ = self.agent_manager.get_miner_agent(synapse.project_id)
+        response = await agent_graph.ainvoke(
+            {"messages": [{"role": "user", "content": synapse.question}]}
+        )
+        answer = response.get('messages')[-1].content
+        return answer
+
+    async def refresh_agents(self, force_load=False):
+        current_dir = Path(__file__).parent
+        save_project_dir = current_dir.parent / "projects" / self.role
+
+        model = os.environ.get("MINER_LLM_MODEL", "google/gemini-3-flash-preview")
         self.llm = ChatOpenAI(
             model=model,
-            temperature=0.0,              # FASTEST deterministic
-            max_tokens=512,               # Tiny responses
-            openai_api_base=os.getenv("OPENAI_API_BASE"),
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
-            extra_headers={
-                "Provider": '{"order":["deepinfra/turbo","deepinfra"],"allow_fallbacks":true}',  # stringified JSON
-                "HTTP-Referer": "https://hermes-subnet.ai",
-            }
+            temperature=1
         )
-        self.agent_manager = AgentManager(save_project_dir=Path(save_dir), llm_synthetic=self.llm)
-        mode = 'load' if force_load else os.getenv("PROJECT_PULL_MODE", "pull")
-        
-        await self.agent_manager.start(mode == "pull", role="miner")
-        logger.info(f"✅ Loaded {len(self.agent_manager.get_miner_agent().keys())} projects | Turbo Model: {model}")
-        self.agents_ready_event.set()
+
+        self.agent_manager = AgentManager(
+            save_project_dir=Path(save_project_dir),
+            llm_synthetic=self.llm,
+        )
+
+        refresh_agents_interval = int(os.getenv("REFRESH_AGENTS_INTERVAL", 60 * 5))  # seconds
+
+        logger.info(f"[MINER] Using LLM model: {model} for miner self-owned agent")
+        logger.info(f"[MINER] Using KEY: {utils.format_openai_key()}")
+
+        silent = False
+        first_load_complete = False
+        while True:
+            try:
+                self.settings.reread()
+                mode = 'pull' if force_load else os.getenv("PROJECT_PULL_MODE", "pull")
+                await self.agent_manager.start(mode == "pull", role="miner", silent=silent)
+
+                if not first_load_complete:
+                    first_load_complete = True
+                    self.agents_ready_event.set()
+                    logger.info("[MINER] Agents initialized and ready - event signaled")
+
+                silent = True
+                mode = 'pull'
+            except Exception as e:
+                logger.error(f"refresh_agents error: {e}")
+            finally:
+                await asyncio.sleep(refresh_agents_interval)
 
     async def profile_tools_stats(self):
-        """Background stats"""
-        while True:
-            await asyncio.sleep(60)
-            logger.info(f"📈 {json.dumps(self.project_usage_metrics.stats())}")
+        try:
+            while True:
+                await asyncio.sleep(60 * 1)
+                logger.info(f"[MINER] usage stats: {json.dumps(self.project_usage_metrics.stats())}")
+        except KeyboardInterrupt:
+            logger.info("[Miner] Profile tools stats interrupted by user")
+            raise
+        except Exception as e:
+            logger.error(f"[Miner] Profile tools stats error: {e}")
+            raise
+
 
 if __name__ == "__main__":
     try:
         miner = Miner()
         asyncio.run(miner.start())
+
+        while True:
+            time.sleep(60 * 2)
     except KeyboardInterrupt:
-        logger.info("👋 Shutdown complete")
+        logger.info("[Miner] Received interrupt signal, shutting down gracefully...")
     except Exception as e:
-        logger.error(f"💥 {e}")
-        sys.exit(1)
+        logger.error(f"[Miner] Unexpected error: {e}")
+        logger.exception(e)
+    finally:
+        logger.info("[Miner] Shutdown complete")
+        sys.exit(0)
